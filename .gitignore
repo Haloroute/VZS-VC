@@ -1,0 +1,47 @@
+# Generated .gitignore file for: Python, Pip, Linux, Windows, VSCode
+# Created with FOSSA's DevOps Tools
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+venv/
+env/
+.env
+*.so
+
+# Pip
+# Add Pip-specific ignores here
+
+# Linux
+# Add Linux-specific ignores here
+
+# Windows
+# Add Windows-specific ignores here
+
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Common
+.DS_Store
+Thumbs.db
+*.log
+*.bak
+*.tmp
+*.swp
+*~
+
+# IDE and editor generated files
+.idea/
+*.sublime-*
+
+# Local environment files
+.env
+.env.local
+.env.*.local
