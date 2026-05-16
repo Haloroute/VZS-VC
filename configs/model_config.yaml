@@ -1,1 +1,6 @@
-# Configuration files (YAML/JSON) for hyperparameters
+# Configuration files (YAML) for model architecture
+model:
+  name: "VZS-VC"
+
+content:
+  

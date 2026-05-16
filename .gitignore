@@ -45,3 +45,17 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# Datasets
+data/raw/
+!data/raw/.gitkeep
+
+# Model checkpoints
+checkpoints/
+!checkpoints/.gitkeep
+
+# Arbitrary files and folders to ignore
+*.ipynb
+.vscode/
+examples/
+logs/
