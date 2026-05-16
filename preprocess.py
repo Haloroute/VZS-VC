@@ -1,13 +1,14 @@
 # Preprocessing scripts for audio data
-import io, os, torch, torchaudio, yaml
+import datasets, os, torch, torchaudio, yaml
 import numpy as np
 
 from dataclasses import asdict
-from datasets import Audio, Features
+from datasets import Audio, Dataset, Features
 from numpy import ndarray
 from torch import Tensor
+from torchcodec import AudioSamples
 
-from data.dataset import VieNeuTTSDataset
+# from data.dataset import VieNeuTTSDataset
 from data.preprocess import dsp_perturbate
 from utils.configs import VieNeuTTSDatasetConfig, VieNeuTTSPerturbationConfig, VieNeuTTSPerturbedDatasetConfig
 
@@ -21,20 +22,28 @@ def audio_perturbate():
     vieneu_tts_perturbed_dataset_config = VieNeuTTSPerturbedDatasetConfig(**dataset_config["vieneu_tts_perturbated_dataset"])
 
     # Load the original VieNeu-TTS-140h dataset using the specified configuration.
-    vieneu_tts_dataset = VieNeuTTSDataset(
-        **asdict(vieneu_tts_dataset_config),
-        part="train", # We will handle train/val splitting ourselves after perturbation,
-        val_size=0.0, # No validation split at this stage, we will split after perturbation
+    # vieneu_tts_dataset = VieNeuTTSDataset(
+    #     **asdict(vieneu_tts_dataset_config),
+    #     part="train", # We will handle train/val splitting ourselves after perturbation,
+    #     val_size=0.0, # No validation split at this stage, we will split after perturbation
+    # )
+    vieneu_tts_dataset: Dataset = datasets.load_dataset(
+        vieneu_tts_dataset_config.path,
+        split=vieneu_tts_dataset_config.split
     )
+    vieneu_tts_dataset = vieneu_tts_dataset.cast_column(vieneu_tts_dataset_config.audio_column, Audio(decode=True)) # Ensure audio column is decoded to (array, sampling_rate) format
     resampler_dict = {} # Store resampler to avoid re-initialization for each sample if needed
 
     def dsp_perturbation_fn(sample: dict) -> dict:
         torch.set_num_threads(1)
-        audio_bytes: bytes = sample.get("audio").get("bytes")
-        audio_tensor, orig_sr = torchaudio.load(io.BytesIO(audio_bytes)) # (C, T)
+        audio: AudioSamples = sample.get(vieneu_tts_dataset_config.audio_column, None).get_all_samples()
+        orig_sr: int = audio.sample_rate
+        audio_tensor: Tensor = audio.data # (C, T)
+        # audio_bytes: bytes = sample.get("audio").get("bytes")
+        # audio_tensor, orig_sr = torchaudio.load(io.BytesIO(audio_bytes)) # (C, T)
 
         # Resample if needed
-        if orig_sr and orig_sr != vieneu_tts_perturbation_config.sample_rate:
+        if audio and orig_sr != vieneu_tts_perturbation_config.sample_rate:
             if orig_sr not in resampler_dict:
                 resampler_dict[orig_sr] = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=vieneu_tts_perturbation_config.sample_rate)
             resampler = resampler_dict[orig_sr]
@@ -45,20 +54,20 @@ def audio_perturbate():
             audio_np=audio_tensor.squeeze(0).numpy(), # Convert to numpy array 
             **asdict(vieneu_tts_perturbation_config) # Unpack perturbation config parameters
         )
-        sample["perturbed_audio"] = {
+        sample[vieneu_tts_perturbed_dataset_config.perturbed_audio_column] = {
             "array": perturbed_audio.astype(np.float32), # Store perturbed audio as float32 numpy array
             "sampling_rate": vieneu_tts_perturbation_config.sample_rate
         }
         return sample
     
     # Create a new dataset with the perturbed audio and the same features as the original dataset, plus a new feature for the perturbed audio.
-    vieneu_tts_perturbed_dataset = vieneu_tts_dataset.dataset.map(
+    vieneu_tts_perturbed_dataset = vieneu_tts_dataset.map(
         dsp_perturbation_fn,
         features=Features({
-            **vieneu_tts_dataset.dataset.features.to_dict(), # Original features
+            **vieneu_tts_dataset.features.to_dict(), # Original features
             "perturbed_audio": Audio(decode=False) # New feature for perturbed audio
         }),
-        # num_proc=max(1, os.cpu_count() - 1), # Use multiple processes for faster splitting if possible
+        num_proc=max(1, os.cpu_count() - 1), # Use multiple processes for faster splitting if possible
         desc="Applying DSP-based perturbation"
     )
 

@@ -3,10 +3,12 @@ from dataclasses import dataclass
 
 @dataclass
 class VieNeuTTSDatasetConfig:
-    name: str = "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
-    sample_rate: int = 24000  # Sample rate for audio
+    # name: str = "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
+    path: str = "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset path
+    # sample_rate: int = 24000  # Sample rate for audio
     split: str = "train"  # VieNeu-TTS-140h has only 'train' split, so we will handle val/test splitting ourselves
-    seed: int = 42 # Random seed for reproducibility when loading the dataset
+    audio_column: str = "audio"  # Column name in the dataset that contains the audio data
+    # seed: int = 42 # Random seed for reproducibility when loading the dataset
 
 @dataclass
 class VieNeuTTSPerturbationConfig:
@@ -26,4 +28,5 @@ class VieNeuTTSPerturbationConfig:
 class VieNeuTTSPerturbedDatasetConfig:
     name: str = "Haloroute/VieNeu-TTS-140h-perturbed"  # Default dataset name
     train_size: float = 0.9 # Proportion of data to use for training (rest will be used for validation)
+    perturbed_audio_column: str = "perturbed_audio" # Column name for the perturbed audio in the new dataset
     seed: int = 42 # Random seed for reproducibility when splitting the dataset

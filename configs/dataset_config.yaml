@@ -1,9 +1,11 @@
 # Configuration files (YAML/JSON) for datasets and training hyperparameters
 vieneu_tts_dataset:
-  name: "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
-  sample_rate: 24000  # Sample rate for output audio
+  # name: "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
+  path: "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset path
+  # sample_rate: 24000  # Sample rate for output audio
   split: "train"  # VieNeu-TTS-140h has only 'train' split, so we will handle val/test splitting ourselves
-  seed: 42 # Random seed for reproducibility when loading the dataset
+  audio_column: "audio"  # Column name in the dataset that contains the audio data
+  # seed: 42 # Random seed for reproducibility when loading the dataset
 
 vieneu_tts_perturbation:
   sample_rate: 16000  # Sample rate for output audio
@@ -21,4 +23,5 @@ vieneu_tts_perturbation:
 vieneu_tts_perturbated_dataset:
   name: "Haloroute/VieNeu-TTS-140h-perturbed" # Dataset name for the perturbed version of VieNeu-TTS-140h
   train_size: 0.9 # Proportion of data to use for training
+  perturbed_audio_column: "perturbed_audio" # Column name for the perturbed audio in the new dataset
   seed: 42 # Random seed for reproducibility when splitting the dataset
