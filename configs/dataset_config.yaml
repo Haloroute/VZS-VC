@@ -10,7 +10,7 @@ vieneu_tts_dataset:
 vieneu_tts_perturbation:
   sampling_rate: 16000 # Sampling rate for output audio
   pitch_shift_down_range: [-6.5, -3.5] # Giảm biên độ Pitch xuống tối đa 6.5 bán cung (Nửa quãng 8)
-  pitch_shift_up_range: [-6.5, -3.5] # Tăng biên độ Pitch lên tối đa 6.5 bán cung (Nửa quãng 8)
+  pitch_shift_up_range: [3.5, 6.5] # Tăng biên độ Pitch lên tối đa 6.5 bán cung (Nửa quãng 8)
   formant_shift_down_range: [1.10, 1.20] # Giả lập người lớn hơn (giọng trầm hơn)
   formant_shift_up_range: [0.80, 0.90] # Giả lập người nhỏ hơn (giọng thanh hơn)
   f0_high_thresh: 200.0

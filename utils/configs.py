@@ -14,7 +14,7 @@ class VieNeuTTSDatasetConfig:
 class VieNeuTTSPerturbationConfig:
     sampling_rate: int = 16000  # Sampling rate for output audio
     pitch_shift_down_range: tuple = (-6.5, -3.5)  # Pitch shift downward range (up to 6.5 semitones)
-    pitch_shift_up_range: tuple = (-6.5, -3.5)  # Pitch shift upward range (up to 6.5 semitones)
+    pitch_shift_up_range: tuple = (3.5, 6.5)  # Pitch shift upward range (up to 6.5 semitones)
     formant_shift_down_range: tuple = (1.10, 1.20)  # Formant shift down to simulate older/deeper voice
     formant_shift_up_range: tuple = (0.80, 0.90)  # Formant shift up to simulate younger/higher voice
     f0_high_thresh: float = 200.0  # High frequency threshold for F0

@@ -11,7 +11,7 @@ def dsp_perturbate(
     audio_np: np.ndarray, 
     sampling_rate: int = 16000,
     pitch_shift_down_range: tuple = (-6.5, -3.5),
-    pitch_shift_up_range: tuple = (-6.5, -3.5),
+    pitch_shift_up_range: tuple = (3.5, 6.5),
     formant_shift_down_range: tuple = (1.10, 1.20), # Giả lập người lớn hơn (giọng trầm hơn)
     formant_shift_up_range: tuple = (0.80, 0.90),   # Giả lập người nhỏ hơn (giọng thanh hơn)
     f0_high_thresh: float = 200.0,
