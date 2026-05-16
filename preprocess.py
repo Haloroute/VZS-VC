@@ -43,9 +43,9 @@ def audio_perturbate():
         # audio_tensor, orig_sr = torchaudio.load(io.BytesIO(audio_bytes)) # (C, T)
 
         # Resample if needed
-        if audio and orig_sr != vieneu_tts_perturbation_config.sample_rate:
+        if audio and orig_sr != vieneu_tts_perturbation_config.sampling_rate:
             if orig_sr not in resampler_dict:
-                resampler_dict[orig_sr] = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=vieneu_tts_perturbation_config.sample_rate)
+                resampler_dict[orig_sr] = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=vieneu_tts_perturbation_config.sampling_rate)
             resampler = resampler_dict[orig_sr]
             audio_tensor: Tensor = resampler(audio_tensor) # (C, T')
 
@@ -56,7 +56,7 @@ def audio_perturbate():
         )
         sample[vieneu_tts_perturbed_dataset_config.perturbed_audio_column] = {
             "array": perturbed_audio.astype(np.float32), # Store perturbed audio as float32 numpy array
-            "sampling_rate": vieneu_tts_perturbation_config.sample_rate
+            "sampling_rate": vieneu_tts_perturbation_config.sampling_rate
         }
         return sample
     
@@ -67,7 +67,7 @@ def audio_perturbate():
             **vieneu_tts_dataset.features.to_dict(), # Original features
             "perturbed_audio": Audio(decode=False) # New feature for perturbed audio
         }),
-        num_proc=max(1, os.cpu_count() - 1), # Use multiple processes for faster splitting if possible
+        num_proc=0 if max(1, os.cpu_count()) == 1 else max(1, os.cpu_count()), # Use multiple processes for faster splitting if possible
         desc="Applying DSP-based perturbation"
     )
 

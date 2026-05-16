@@ -10,7 +10,7 @@ class VieNeuTTSDataset(IterableDataset):
     def __init__(
         self, 
         name: str,
-        sample_rate: int = 24000,
+        sampling_rate: int = 24000,
         split: str = "train", 
         part: Literal["train", "val"] = "train", 
         val_size: int | float = 0.1, 
@@ -19,7 +19,7 @@ class VieNeuTTSDataset(IterableDataset):
         super().__init__()
         # Use provided name
         self.dataset_name = name
-        self.sample_rate = sample_rate
+        self.sampling_rate = sampling_rate
         self.split = split # VieNeu-TTS-140h has only 'train' split, so we will handle val/test splitting ourselves
         self.part = part
 
@@ -61,8 +61,8 @@ class VieNeuTTSDataset(IterableDataset):
                 # audio_tensor, orig_sr = torchaudio.load(io.BytesIO(audio_bytes))
 
                 # # Resample if needed
-                # if orig_sr and orig_sr != self.sample_rate:
-                #     resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=self.sample_rate)
+                # if orig_sr and orig_sr != self.sampling_rate:
+                #     resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=self.sampling_rate)
                 #     audio_tensor = resampler(audio_tensor)
                     
                 # yield TensorDict({

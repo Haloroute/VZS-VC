@@ -5,14 +5,14 @@ from dataclasses import dataclass
 class VieNeuTTSDatasetConfig:
     # name: str = "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
     path: str = "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset path
-    # sample_rate: int = 24000  # Sample rate for audio
+    # sampling_rate: int = 24000  # Sampling rate for audio
     split: str = "train"  # VieNeu-TTS-140h has only 'train' split, so we will handle val/test splitting ourselves
     audio_column: str = "audio"  # Column name in the dataset that contains the audio data
     # seed: int = 42 # Random seed for reproducibility when loading the dataset
 
 @dataclass
 class VieNeuTTSPerturbationConfig:
-    sample_rate: int = 16000  # Sample rate for output audio
+    sampling_rate: int = 16000  # Sampling rate for output audio
     pitch_shift_down_range: tuple = (-6.5, -3.5)  # Pitch shift downward range (up to 6.5 semitones)
     pitch_shift_up_range: tuple = (-6.5, -3.5)  # Pitch shift upward range (up to 6.5 semitones)
     formant_shift_down_range: tuple = (1.10, 1.20)  # Formant shift down to simulate older/deeper voice

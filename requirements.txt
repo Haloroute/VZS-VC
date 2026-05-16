@@ -13,7 +13,7 @@ pyworld
 torchcodec
 
 # Data handling and utilities
-datasets
+datasets[audio]
 huggingface_hub
 PyYAML
 tensordict
