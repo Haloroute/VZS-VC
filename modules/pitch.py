@@ -1,9 +1,11 @@
 # Wrapper network for pitch extraction using TorchFCPE
 import torch
 import torch.nn as nn
+
 from torchfcpe import spawn_bundled_infer_model
 
 
+# Wrapper network for pitch extraction using TorchFCPE.
 class FCPE(nn.Module):
     """
     Wrapper network for pitch extraction using TorchFCPE.
@@ -32,7 +34,7 @@ class FCPE(nn.Module):
 
     def to(self, *args, **kwargs):
         self.model = self.model.to(*args, **kwargs)
-        return super(FCPE, self).to(*args, **kwargs)
+        return self
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
         """
