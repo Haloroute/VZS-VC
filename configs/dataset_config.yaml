@@ -1,4 +1,5 @@
 # Configuration files (YAML/JSON) for datasets and training hyperparameters
+# Configuration for the original VieNeu-TTS-140h dataset
 vieneu_tts_dataset:
   # name: "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
   path: "pnnbao-ump/VieNeu-TTS-140h" # Default dataset path
@@ -7,6 +8,7 @@ vieneu_tts_dataset:
   audio_column: "audio" # Column name in the dataset that contains the audio data
   # seed: 42 # Random seed for reproducibility when loading the dataset
 
+# Configuration for the DSP-based perturbation process
 vieneu_tts_perturbation:
   sampling_rate: 16000 # Sampling rate for output audio
   pitch_shift_down_range: [-6.5, -3.5] # Giảm biên độ Pitch xuống tối đa 6.5 bán cung (Nửa quãng 8)
@@ -20,6 +22,7 @@ vieneu_tts_perturbation:
   eq_q_range: [1.5, 4.0]
   seed: 42 # Random seed for reproducibility
 
+# Configuration for the new dataset created after applying DSP-based perturbation to VieNeu-TTS-140h
 vieneu_tts_perturbated_dataset:
   name: "Haloroute/VieNeu-TTS-140h-perturbed" # Dataset name for the perturbed version of VieNeu-TTS-140h
   train_size: 0.9 # Proportion of data to use for training

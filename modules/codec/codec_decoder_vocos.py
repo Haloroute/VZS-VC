@@ -445,7 +445,7 @@ class CodecDecoderVocos(nn.Module):
 
         def _apply_weight_norm(m):
             if isinstance(m, nn.Conv1d) or isinstance(m, nn.ConvTranspose1d):
-                torch.nn.utils.weight_norm(m)
+                torch.nn.utils.parametrizations.weight_norm(m)
 
         self.apply(_apply_weight_norm)
 

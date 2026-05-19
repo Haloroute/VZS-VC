@@ -1,6 +1,0 @@
-# Configuration files (YAML) for model architecture
-model:
-  name: "VZS-VC"
-
-content:
-  

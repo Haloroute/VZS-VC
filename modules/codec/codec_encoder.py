@@ -76,7 +76,7 @@ class CodecEncoder(nn.Module):
 
         def _apply_weight_norm(m):
             if isinstance(m, nn.Conv1d):
-                torch.nn.utils.weight_norm(m)
+                torch.nn.utils.parametrizations.weight_norm(m)
 
         self.apply(_apply_weight_norm)
 

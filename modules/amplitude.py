@@ -11,17 +11,15 @@ class LocalRMSAmplitude(nn.Module):
     Trích xuất đường viền cường độ âm thanh (Amplitude/Energy Contour) cục bộ
     bằng phương pháp Local RMS với cửa sổ trượt.
     """
-    def __init__(self, window_size: int = 256, hop_size: int = 160, eps: float = 1e-8):
+    def __init__(self, window_size: int = 960, hop_size: int = 320):
         """
         Args:
             window_size (int): Kích thước cửa sổ tính toán (số sample). Càng lớn đường bao càng trơn.
             hop_size (int): Khoảng cách giữa các cửa sổ. Càng nhỏ đường bao càng chi tiết.
-            eps (float): Giá trị nhỏ để tránh lỗi chia cho 0 hoặc căn bậc hai của 0.
         """
         super(LocalRMSAmplitude, self).__init__()
         self.window_size = window_size
         self.hop_size = hop_size
-        self.eps = eps
 
         # Tính toán padding để đảm bảo độ dài T không đổi
         self.pad_left = window_size // 2
@@ -50,7 +48,7 @@ class LocalRMSAmplitude(nn.Module):
         mean_sq = F.avg_pool1d(x_pad, kernel_size=self.window_size, stride=self.hop_size, padding=0)
         
         # 4. Tính căn bậc hai (Root) để thu được RMS
-        rms = torch.sqrt(mean_sq + self.eps)
+        rms = torch.sqrt(mean_sq + 1e-8)  # Thêm epsilon nhỏ để tránh chia cho 0
         
         # Loại bỏ chiều channel: (B, 1, T) -> (B, T)
         return rms.squeeze(1)

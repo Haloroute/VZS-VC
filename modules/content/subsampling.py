@@ -204,12 +204,12 @@ class Conv2dSubsampling(nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
+        in_channels: int = 80,
+        out_channels: int = 192,
         layer1_channels: int = 8,
         layer2_channels: int = 32,
         layer3_channels: int = 128,
-        dropout: FloatLike = 0.1,
+        dropout: FloatLike = ScheduledFloat((0.0, 0.3), (20000.0, 0.1)),
     ) -> None:
         """
         Args:

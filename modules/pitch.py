@@ -13,11 +13,11 @@ class FCPE(nn.Module):
     def __init__(
         self,
         sampling_rate: int = 16000,
-        hop_size: int = 160,
+        hop_size: int = 320,
         decode_mode: str = 'local_argmax',
         threshold: float = 0.006,
-        f0_min: float = 80,
-        f0_max: float = 880
+        f0_min: float = 32.7,
+        f0_max: float = 1975.5
     ):
         super(FCPE, self).__init__()
         

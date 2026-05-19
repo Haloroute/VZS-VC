@@ -1,6 +1,7 @@
 # Configuration class for the TTS model and training process
 from dataclasses import dataclass
 
+# Configuration for the original VieNeu-TTS-140h dataset
 @dataclass
 class VieNeuTTSDatasetConfig:
     # name: str = "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
@@ -10,6 +11,7 @@ class VieNeuTTSDatasetConfig:
     audio_column: str = "audio"  # Column name in the dataset that contains the audio data
     # seed: int = 42 # Random seed for reproducibility when loading the dataset
 
+# Configuration for the DSP-based perturbation process
 @dataclass
 class VieNeuTTSPerturbationConfig:
     sampling_rate: int = 16000  # Sampling rate for output audio
@@ -24,6 +26,7 @@ class VieNeuTTSPerturbationConfig:
     eq_q_range: tuple = (1.5, 4.0)  # Range for equalizer Q factor
     seed: int = 42 # Random seed for reproducibility when applying perturbations
 
+# Configuration for the new dataset created after applying DSP-based perturbation to VieNeu-TTS-140h
 @dataclass
 class VieNeuTTSPerturbedDatasetConfig:
     name: str = "Haloroute/VieNeu-TTS-140h-perturbed"  # Default dataset name

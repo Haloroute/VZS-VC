@@ -100,22 +100,22 @@ class Zipformer2(nn.Module):
     def __init__(
         self,
         output_downsampling_factor: int = 2,
-        downsampling_factor: Tuple[int] = (2, 4),
-        encoder_dim: Union[int, Tuple[int]] = 384,
-        num_encoder_layers: Union[int, Tuple[int]] = 4,
-        encoder_unmasked_dim: Union[int, Tuple[int]] = 256,
-        query_head_dim: Union[int, Tuple[int]] = 24,
-        pos_head_dim: Union[int, Tuple[int]] = 4,
-        value_head_dim: Union[int, Tuple[int]] = 12,
-        num_heads: Union[int, Tuple[int]] = 8,
-        feedforward_dim: Union[int, Tuple[int]] = 1536,
-        cnn_module_kernel: Union[int, Tuple[int]] = 31,
-        pos_dim: int = 192,
-        dropout: FloatLike = None,  # see code below for default
+        downsampling_factor: Tuple[int] = (1, 2, 4, 8, 4, 2),
+        encoder_dim: Union[int, Tuple[int]] = (192, 256, 384, 512, 384, 256),
+        num_encoder_layers: Union[int, Tuple[int]] = (2, 2, 3, 4, 3, 2),
+        encoder_unmasked_dim: Union[int, Tuple[int]] = (192, 192, 256, 256, 256, 192),
+        query_head_dim: Union[int, Tuple[int]] = (32,),
+        pos_head_dim: Union[int, Tuple[int]] = (4,),
+        value_head_dim: Union[int, Tuple[int]] = (12,),
+        num_heads: Union[int, Tuple[int]] = (4, 4, 4, 8, 4, 4),
+        feedforward_dim: Union[int, Tuple[int]] = (512, 768, 1024, 1536, 1024, 768),
+        cnn_module_kernel: Union[int, Tuple[int]] = (31, 31, 15, 15, 15, 31),
+        pos_dim: int = 48,
+        dropout: FloatLike = ScheduledFloat((0.0, 0.3), (20000.0, 0.1)),  # see code below for default
         warmup_batches: float = 4000.0,
         causal: bool = False,
-        chunk_size: Tuple[int] = [-1],
-        left_context_frames: Tuple[int] = [-1],
+        chunk_size: Tuple[int] = (-1,),
+        left_context_frames: Tuple[int] = (-1,),
     ) -> None:
         super(Zipformer2, self).__init__()
 
