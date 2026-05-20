@@ -1,1 +1,19 @@
 # Python dependencies
+# Deep learning libraries
+torch
+torchaudio
+transformers
+
+# Model-specific libraries
+torchfcpe
+
+# Data processing libraries
+librosa
+pyworld
+torchcodec
+
+# Data handling and utilities
+datasets[audio]
+huggingface_hub
+PyYAML
+tensordict

@@ -1,0 +1,30 @@
+# Configuration files (YAML/JSON) for datasets and training hyperparameters
+# Configuration for the original VieNeu-TTS-140h dataset
+vieneu_tts_dataset:
+  # name: "pnnbao-ump/VieNeu-TTS-140h"  # Default dataset name
+  path: "pnnbao-ump/VieNeu-TTS-140h" # Default dataset path
+  # sampling_rate: 24000  # Sampling rate for output audio
+  split: "train" # VieNeu-TTS-140h has only 'train' split, so we will handle val/test splitting ourselves
+  audio_column: "audio" # Column name in the dataset that contains the audio data
+  # seed: 42 # Random seed for reproducibility when loading the dataset
+
+# Configuration for the DSP-based perturbation process
+vieneu_tts_perturbation:
+  sampling_rate: 16000 # Sampling rate for output audio
+  pitch_shift_down_range: [-6.5, -3.5] # Giảm biên độ Pitch xuống tối đa 6.5 bán cung (Nửa quãng 8)
+  pitch_shift_up_range: [3.5, 6.5] # Tăng biên độ Pitch lên tối đa 6.5 bán cung (Nửa quãng 8)
+  formant_shift_down_range: [1.10, 1.20] # Giả lập người lớn hơn (giọng trầm hơn)
+  formant_shift_up_range: [0.80, 0.90] # Giả lập người nhỏ hơn (giọng thanh hơn)
+  f0_high_thresh: 200.0
+  f0_low_thresh: 110.0
+  eq_center_freq_range: [100.0, 8000.0]
+  eq_gain_range: [-12.0, 12.0]
+  eq_q_range: [1.5, 4.0]
+  seed: 42 # Random seed for reproducibility
+
+# Configuration for the new dataset created after applying DSP-based perturbation to VieNeu-TTS-140h
+vieneu_tts_perturbated_dataset:
+  path: "Haloroute/VieNeu-TTS-140h-perturbed" # Dataset name for the perturbed version of VieNeu-TTS-140h
+  train_size: 0.9 # Proportion of data to use for training
+  perturbed_audio_column: "perturbed_audio" # Column name for the perturbed audio in the new dataset
+  seed: 42 # Random seed for reproducibility when splitting the dataset
