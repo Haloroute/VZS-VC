@@ -25,10 +25,14 @@ from .configs import (
 
 
 # Functions to load pretrained model for timbre encoder (ERes2Net-V2)
-def load_timbre_encoder(config: ERes2NetV2ModuleConfig, device: torch.device):
+def load_timbre_encoder(device: torch.device, config: ERes2NetV2ModuleConfig = None):
+    # If no config is provided, use the default one
+    if config is None:
+        config = ERes2NetV2ModuleConfig()
+
     # Initialize the Timbre Encoder model
     model = ERes2NetV2()
-    
+
     # Load the pretrained checkpoint
     load_model(model, config.checkpoint_path)
 
@@ -38,7 +42,11 @@ def load_timbre_encoder(config: ERes2NetV2ModuleConfig, device: torch.device):
 
 
 # Functions to load pretrained model for pitch encoder (FCPE)
-def load_pitch_encoder(config: FCPEModuleConfig, device: torch.device):
+def load_pitch_encoder(device: torch.device, config: FCPEModuleConfig = None):
+    # If no config is provided, use the default one
+    if config is None:
+        config = FCPEModuleConfig()
+
     # Initialize the Pitch Encoder model
     model = FCPE(**asdict(config))
 
@@ -48,7 +56,11 @@ def load_pitch_encoder(config: FCPEModuleConfig, device: torch.device):
 
 
 # Functions to load pretrained model for content encoder (Zipformer2)
-def load_content_encoder(config: Zipformer2ModuleConfig, device: torch.device):
+def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = None):
+    # If no config is provided, use the default one
+    if config is None:
+        config = Zipformer2ModuleConfig()
+
     # 1. Khởi tạo module Subsampling (encoder_embed)
     # Tham số mặc định: feature_dim = 80, encoder_dim đầu tiên = 192
     encoder_embed = Conv2dSubsampling()
@@ -74,7 +86,11 @@ def load_content_encoder(config: Zipformer2ModuleConfig, device: torch.device):
 
 
 # Functions to load module for amplitude encoder (LocalRMS)
-def load_amplitude_encoder(config: LocalRMSModuleConfig, device: torch.device):
+def load_amplitude_encoder(device: torch.device, config: LocalRMSModuleConfig = None):
+    # If no config is provided, use the default one
+    if config is None:
+        config = LocalRMSModuleConfig()
+
     model = LocalRMSAmplitude(**asdict(config))
 
     # Set the model to evaluation mode
@@ -83,7 +99,11 @@ def load_amplitude_encoder(config: LocalRMSModuleConfig, device: torch.device):
 
 
 # Functions to load module for neural codec (NeuCodec)
-def load_codec(config: NeuCodecModuleConfig, device: torch.device):
+def load_codec(device: torch.device, config: NeuCodecModuleConfig = None):
+    # If no config is provided, use the default one
+    if config is None:
+        config = NeuCodecModuleConfig()
+
     model = NeuCodec.from_pretrained(**asdict(config))
 
     # Set the model to evaluation mode

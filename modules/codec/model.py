@@ -178,31 +178,14 @@ class NeuCodec(
         _, fsq_codes, _ = self.generator(concat_emb, vq=True)
         return fsq_codes
 
-    def encode_acoustic(self, audio: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            audio: torch.Tensor [B, 1, T], input audio
-
-        Returns:
-            acoustic_emb: torch.Tensor [B, D, F], 50Hz acoutic embedding
-        """
-        # Like `encode_code` but returns the continuous embedding before quantization instead of the discrete codes.
-        # prepare inputs
-        y = self._prepare_audio(audio)
-    
-        # acoustic encoding
-        acoustic_emb = self.CodecEnc(y.to(self.device))
-        acoustic_emb = acoustic_emb.transpose(1, 2)
-
-        return acoustic_emb
-
-    def encode_pre_vq(self, audio: torch.Tensor) -> torch.Tensor:
+    def encode_pre_vq(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             audio: torch.Tensor [B, 1, T], input audio
 
         Returns:
             pre_vq_emb: torch.Tensor [B, F, 8], 50Hz FSQ embedding before codes
+            acoustic_emb: torch.Tensor [B, D, F], 50Hz acoutic embedding
         """
          
         # prepare inputs
@@ -240,7 +223,7 @@ class NeuCodec(
 
         # Return the continuous embedding before quantization instead of the discrete codes.
         pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
-        return pre_vq_emb
+        return pre_vq_emb, acoustic_emb
     
     def decode_code(self, fsq_codes: torch.Tensor) -> torch.Tensor:
         """
@@ -341,31 +324,14 @@ class DistillNeuCodec(NeuCodec):
         _, fsq_codes, _ = self.generator(concat_emb, vq=True)
         return fsq_codes
     
-    def encode_acoustic(self, audio: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            audio: torch.Tensor [B, 1, T], input audio
-
-        Returns:
-            fsq_emb: torch.Tensor [B, D, F], 50Hz acoutic embedding
-        """
-        # Like `encode_code` but returns the continuous embedding before quantization instead of the discrete codes.
-        # prepare inputs
-        y = self._prepare_audio(audio)
-    
-        # acoustic encoding
-        fsq_emb = self.fc_sq_prior(self.codec_encoder(y.to(self.device)))
-        fsq_emb = fsq_emb.transpose(1, 2)
-
-        return fsq_emb
-    
-    def encode_pre_vq(self, audio: torch.Tensor) -> torch.Tensor:
+    def encode_pre_vq(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             audio: torch.Tensor [B, 1, T], input audio
 
         Returns:
             pre_vq_emb: torch.Tensor [B, F, 8], 50Hz FSQ embedding before codes
+            fsq_emb: torch.Tensor [B, D, F], 50Hz acoutic embedding
         """
         # Like `encode_code` but returns the continuous embedding before quantization instead of the discrete codes.
         # prepare inputs
@@ -405,7 +371,7 @@ class DistillNeuCodec(NeuCodec):
 
         # Return the continuous embedding before quantization instead of the discrete codes.
         pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
-        return pre_vq_emb
+        return pre_vq_emb, fsq_emb
 
 
 class NeuCodecOnnxDecoder(

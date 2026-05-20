@@ -24,7 +24,7 @@ vieneu_tts_perturbation:
 
 # Configuration for the new dataset created after applying DSP-based perturbation to VieNeu-TTS-140h
 vieneu_tts_perturbated_dataset:
-  name: "Haloroute/VieNeu-TTS-140h-perturbed" # Dataset name for the perturbed version of VieNeu-TTS-140h
+  path: "Haloroute/VieNeu-TTS-140h-perturbed" # Dataset name for the perturbed version of VieNeu-TTS-140h
   train_size: 0.9 # Proportion of data to use for training
   perturbed_audio_column: "perturbed_audio" # Column name for the perturbed audio in the new dataset
   seed: 42 # Random seed for reproducibility when splitting the dataset

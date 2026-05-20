@@ -29,7 +29,7 @@ class VieNeuTTSPerturbationConfig:
 # Configuration for the new dataset created after applying DSP-based perturbation to VieNeu-TTS-140h
 @dataclass
 class VieNeuTTSPerturbedDatasetConfig:
-    name: str = "Haloroute/VieNeu-TTS-140h-perturbed"  # Default dataset name
+    path: str = "Haloroute/VieNeu-TTS-140h-perturbed"  # Default dataset name
     train_size: float = 0.9 # Proportion of data to use for training (rest will be used for validation)
     perturbed_audio_column: str = "perturbed_audio" # Column name for the perturbed audio in the new dataset
     seed: int = 42 # Random seed for reproducibility when splitting the dataset
