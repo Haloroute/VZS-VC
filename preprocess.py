@@ -1,11 +1,13 @@
 # Preprocessing scripts for audio data
-import datasets, os, torch, torchaudio, yaml
+import datasets, os, torch, torchaudio
 import numpy as np
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datasets import Audio, Dataset, DatasetDict, Features
 from numpy import ndarray
 from torch import Tensor
+from torchaudio.transforms import Resample
 from torchcodec import AudioSamples
 
 # from data.dataset import VieNeuTTSDataset
@@ -77,12 +79,11 @@ def audio_perturbate():
                 "array": perturbed_audio.astype(np.float32), # Store perturbed audio as float32 numpy array
                 "sampling_rate": vieneu_tts_perturbation_config.sampling_rate
             }
-        except Exception as e:
-            print(f"Error processing sample at index {idx}!")
-            sample[vieneu_tts_perturbed_dataset_config.perturbed_audio_column] = sample.get(vieneu_tts_dataset_config.audio_column, None) # Fallback to original audio if perturbation fails
-        finally:
             return sample
-    
+        except Exception as e:
+            print(f"Error processing sample at index {idx} during DSP perturbation! Error: {e}")
+            raise e # Reraise the exception to be handled by the map function's error handling
+
     # Create a new dataset with the perturbed audio and the same features as the original dataset, plus a new feature for the perturbed audio.
     vieneu_tts_perturbed_dataset = vieneu_tts_dataset.map(
         dsp_perturbation_fn,
@@ -126,45 +127,53 @@ def extract_embeddings():
     timbre_encoder: ERes2NetV2 = load_timbre_encoder(device)
     resampler_dict = {} # Store resampler to avoid re-initialization for each sample if needed
 
+    # Initialize multi-processing operations
+    streams = [torch.cuda.Stream() for _ in range(5)] # Create separate streams for each encoder to allow parallel processing
+    executor = ThreadPoolExecutor(max_workers=5) # Use a thread pool executor to run the encoders in parallel
+
+    def inference_fn(func, input_tensor, stream, *args):
+        with torch.cuda.stream(stream), torch.inference_mode():
+            return func(input_tensor, *args)
+
     # Define a function to extract embeddings from each sample in the perturbed dataset. This function will be applied to each sample in the dataset using the map function.
     def embedding_extraction_fn(sample: dict, idx: int) -> dict:
         try:
             # Extract the original and perturbed audio from the sample
-            torch.set_num_threads(1)
+            # torch.set_num_threads(1)
             orignal_audio: AudioSamples = sample.get(vieneu_tts_dataset_config.audio_column, None).get_all_samples()
             perturbed_audio: AudioSamples = sample.get(vieneu_tts_perturbed_dataset_config.perturbed_audio_column, None).get_all_samples()
             original_sampling_rate: int = orignal_audio.sample_rate
             perturbed_sampling_rate: int = perturbed_audio.sample_rate
-            original_audio_tensor: Tensor = orignal_audio.data.unsqueeze(0) # (1, C, T_24k)
-            perturbed_audio_tensor: Tensor = perturbed_audio.data.unsqueeze(0) # (1, C, T_16k)
+            original_audio_tensor: Tensor = orignal_audio.data.unsqueeze(0).to(device, non_blocking=True) # (1, C, T_24k)
+            perturbed_audio_tensor: Tensor = perturbed_audio.data.unsqueeze(0).to(device, non_blocking=True) # (1, C, T_16k)
 
             # Resample if needed
             if original_sampling_rate != vieneu_tts_perturbation_config.sampling_rate:
                 if original_sampling_rate not in resampler_dict:
-                    resampler_dict[original_sampling_rate] = torchaudio.transforms.Resample(orig_freq=original_sampling_rate, new_freq=vieneu_tts_perturbation_config.sampling_rate)
+                    resampler_dict[original_sampling_rate] = Resample(orig_freq=original_sampling_rate, new_freq=vieneu_tts_perturbation_config.sampling_rate).to(device)
                 resampler = resampler_dict[original_sampling_rate]
                 original_audio_tensor: Tensor = resampler(original_audio_tensor) # (1, C, T')
 
             if perturbed_sampling_rate != vieneu_tts_perturbation_config.sampling_rate:
                 if perturbed_sampling_rate not in resampler_dict:
-                    resampler_dict[perturbed_sampling_rate] = torchaudio.transforms.Resample(orig_freq=perturbed_sampling_rate, new_freq=vieneu_tts_perturbation_config.sampling_rate)
+                    resampler_dict[perturbed_sampling_rate] = Resample(orig_freq=perturbed_sampling_rate, new_freq=vieneu_tts_perturbation_config.sampling_rate).to(device)
                 resampler = resampler_dict[perturbed_sampling_rate]
                 perturbed_audio_tensor: Tensor = resampler(perturbed_audio_tensor) # (1, C, T')
 
-            # Extract amplitude embedding
-            amplitude_embedding: Tensor = amplitude_encoder.inference(original_audio_tensor.to(device)) # (D_amp)
+            # Create funtions to run each encoder in parallel
+            f_amplitude = executor.submit(inference_fn, amplitude_encoder.inference, original_audio_tensor, streams[0])
+            f_content = executor.submit(inference_fn, content_encoder.inference, perturbed_audio_tensor, streams[1])
+            f_pitch = executor.submit(inference_fn, pitch_encoder.inference, original_audio_tensor, streams[2])
+            f_timbre = executor.submit(inference_fn, timbre_encoder.inference, original_audio_tensor, streams[3])
+            f_codec = executor.submit(inference_fn, codec.encode_pre_vq, original_audio_tensor, streams[4])
 
-            # Extract content embedding
-            content_embedding: Tensor = content_encoder.inference(perturbed_audio_tensor.to(device)) # (D_content)
-
-            # Extract pitch embedding
-            pitch_embedding: Tensor = pitch_encoder.inference(original_audio_tensor.to(device)) # (D_pitch)
-
-            # Extract timbre embedding
-            timbre_embedding: Tensor = timbre_encoder.inference(original_audio_tensor.to(device)) # (D_timbre)
-
-            # Extract codec embedding
-            pre_vq_embedding, acoustic_embedding = codec.encode_pre_vq(original_audio_tensor.to(device)) # (D_codec)
+            # Wait for all encoders to finish and get the results
+            torch.cuda.synchronize() # Ensure all streams have finished processing
+            amplitude_embedding: Tensor = f_amplitude.result() # (1, T)
+            content_embedding: Tensor = f_content.result() # (1, T, D_content)
+            pitch_embedding: Tensor = f_pitch.result() # (1, T)
+            timbre_embedding: Tensor = f_timbre.result() # (1, D_timbre)
+            pre_vq_embedding, acoustic_embedding = f_codec.result() # (1, T, D_pre_vq), (1, T, D_acoustic)
 
             # Store the extracted embeddings in the sample dictionary
             del sample[vieneu_tts_dataset_config.audio_column], sample[vieneu_tts_perturbed_dataset_config.perturbed_audio_column] # Remove original and perturbed audio from the sample to save space, we only keep the embeddings
@@ -174,10 +183,11 @@ def extract_embeddings():
             sample[vieneu_tts_preprocessed_dataset_config.timbre_column] = timbre_embedding.squeeze(0).numpy(force=True)
             sample[vieneu_tts_preprocessed_dataset_config.pre_vq_column] = pre_vq_embedding.squeeze(0).numpy(force=True)
             sample[vieneu_tts_preprocessed_dataset_config.acoustic_column] = acoustic_embedding.squeeze(0).numpy(force=True)
+
+            return sample
         except Exception as e:
             print(f"Error processing sample at index {idx} during embedding extraction! Error: {e}")
-        finally:
-            return sample
+            raise e # Reraise the exception to be handled by the map function's error handling
 
     # Create a new dataset with the extracted embeddings and the same features as the perturbed dataset, plus new features for the embeddings.
     vieneu_tts_preprocessed_dataset: DatasetDict = vieneu_tts_perturbed_datasets.map(

@@ -48,7 +48,10 @@ class FCPE(nn.Module):
         """
         audio_length = audio.shape[1]
         f0_target_length = (audio_length // self.hop_size) + 1
-        
+        peak = torch.max(torch.abs(audio)) # Get the maximum absolute value in the audio tensor
+        if peak > 1:
+            audio = audio / (peak + 1e-8) # Normalize the audio to be in the range [-1, 1]
+
         f0 = self.model.infer(
             audio,
             sr=self.sampling_rate,
