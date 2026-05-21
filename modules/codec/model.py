@@ -224,7 +224,7 @@ class NeuCodec(
 
             # Return the continuous embedding before quantization instead of the discrete codes.
             pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
-            return pre_vq_emb, acoustic_emb
+            return pre_vq_emb, acoustic_emb.permute(0, 2, 1) # [B, F, D]
     
     def decode_code(self, fsq_codes: torch.Tensor) -> torch.Tensor:
         """
@@ -375,7 +375,7 @@ class DistillNeuCodec(NeuCodec):
 
             # Return the continuous embedding before quantization instead of the discrete codes.
             pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
-            return pre_vq_emb, fsq_emb
+            return pre_vq_emb, fsq_emb.permute(0, 2, 1) # [B, F, D 
 
 
 class NeuCodecOnnxDecoder(

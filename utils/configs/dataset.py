@@ -33,3 +33,16 @@ class VieNeuTTSPerturbedDatasetConfig:
     train_size: float = 0.9 # Proportion of data to use for training (rest will be used for validation)
     perturbed_audio_column: str = "perturbed_audio" # Column name for the perturbed audio in the new dataset
     seed: int = 42 # Random seed for reproducibility when splitting the dataset
+
+@dataclass
+class VieNeuTTSPreprocessedDatasetConfig:
+    # dataset_config: VieNeuTTSDatasetConfig = VieNeuTTSDatasetConfig()
+    # perturbation_config: VieNeuTTSPerturbationConfig = VieNeuTTSPerturbationConfig()
+    # perturbed_dataset_config: VieNeuTTSPerturbedDatasetConfig = VieNeuTTSPerturbedDatasetConfig()
+    path: str = "Haloroute/VieNeu-TTS-140h-preprocessed"
+    amplitude_column: str = "amplitude_embedding" # Column name for amplitude embedding in the preprocessed dataset
+    content_column: str = "content_embedding" # Column name for content embedding in the preprocessed dataset
+    pitch_column: str = "pitch_embedding" # Column name for pitch embedding in the preprocessed dataset
+    timbre_column: str = "timbre_embedding" # Column name for timbre embedding in the preprocessed dataset
+    pre_vq_column: str = "pre_vq_embedding" # Column name for pre-VQ embedding in the preprocessed dataset
+    acoustic_column: str = "acoustic_embedding" # Column name for acoustic embedding in the preprocessed dataset

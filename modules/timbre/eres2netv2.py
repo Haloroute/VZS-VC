@@ -266,7 +266,7 @@ class ERes2NetV2(nn.Module):
         else:
             return embed_a
 
-    def inference(self, x: torch.Tensor):
+    def inference(self, x: torch.Tensor) -> torch.Tensor:
         """
         Perform inference using the ERes2Net-V2 model.
         Args:
