@@ -165,6 +165,8 @@ with the following commands:
 
 # import k2
 import torch
+
+import torchaudio.compliance.kaldi as Kaldi
 # from icefall.checkpoint import (
 #     average_checkpoints,
 #     average_checkpoints_with_averaged_model,
@@ -275,10 +277,24 @@ def make_pad_mask(lengths: torch.Tensor, max_len: int = None) -> torch.Tensor:
 class EncoderModel(nn.Module):
     """A wrapper for encoder and encoder_embed"""
 
-    def __init__(self, encoder: nn.Module, encoder_embed: nn.Module) -> None:
+    def __init__(
+        self, 
+        encoder: nn.Module, 
+        encoder_embed: nn.Module,
+        dither: int = 0,
+        high_freq: int = -400,
+        n_mel_bins: int = 80,
+        sampling_rate: int = 16000,
+        snip_edges: bool = False
+    ) -> None:
         super().__init__()
         self.encoder = encoder
         self.encoder_embed = encoder_embed
+        self.dither = dither
+        self.high_freq = high_freq
+        self.n_mel_bins = n_mel_bins
+        self.sampling_rate = sampling_rate
+        self.snip_edges = snip_edges
 
     def forward(
         self, features: Tensor, feature_lengths: Tensor
@@ -297,6 +313,29 @@ class EncoderModel(nn.Module):
         encoder_out = encoder_out.permute(1, 0, 2)  # (T, N, C) ->(N, T, C)
 
         return encoder_out, encoder_out_lens
+
+    def inference(self, x: torch.Tensor):
+        """
+        Perform inference using the ZipFormer model.
+        Args:
+            x: A 3D tensor (with batch dimension) containing the audio data in mono, 16kHz format (shape: (N, 1, T)).
+        Returns:
+            The output of the model after inference (shape: (N, T_content, D_content) with T_content and D_content = 512 being the number of time steps and features respectively).
+        """
+        with torch.inference_mode():
+            features = torch.stack([
+                Kaldi.fbank(
+                    feature, # Add channel dimension for Kaldi.fbank
+                    dither=self.dither,
+                    high_freq=self.high_freq,
+                    num_mel_bins=self.n_mel_bins,
+                    sample_frequency=self.sampling_rate,
+                    snip_edges=self.snip_edges
+                ) for feature in x
+            ])  # (N, num_frames, num_mel_bins)
+            feature_lengths = torch.tensor([feature.size(0) for feature in features], dtype=torch.int32, device=x.device)
+            output, _ = self.forward(features, feature_lengths) # (N, T_content, D_content)
+            return output
 
 
 class StreamingEncoderModel(nn.Module):

@@ -4,6 +4,7 @@ import math, torch
 
 import torch.nn as nn
 import torch.nn.functional as F
+import torchaudio.compliance.kaldi as Kaldi
 
 from . import pooling_layers
 from .fushion import AFF
@@ -164,18 +165,22 @@ class BasicBlockERes2NetV2AFF(nn.Module):
     
 
 class ERes2NetV2(nn.Module):
-    def __init__(self,
-                 block=BasicBlockERes2NetV2,
-                 block_fuse=BasicBlockERes2NetV2AFF,
-                 num_blocks=[3, 4, 6, 3],
-                 m_channels=64,
-                 feat_dim=80,
-                 embed_dim=192,
-                 baseWidth=26,
-                 scale=2,
-                 expansion=2,
-                 pooling_func='TSTP',
-                 two_emb_layer=False):
+    def __init__(
+        self,
+        block=BasicBlockERes2NetV2,
+        block_fuse=BasicBlockERes2NetV2AFF,
+        num_blocks=[3, 4, 6, 3],
+        m_channels=64,
+        feat_dim=80,
+        embed_dim=192,
+        baseWidth=26,
+        scale=2,
+        expansion=2,
+        pooling_func='TSTP',
+        two_emb_layer=False,
+        n_mel_bins=80, # Number of mel bins to produce Kbank features
+        sampling_rate=16000, # Sampling rate of input audio
+    ):
         super(ERes2NetV2, self).__init__()
         self.in_planes = m_channels
         self.feat_dim = feat_dim
@@ -185,6 +190,8 @@ class ERes2NetV2(nn.Module):
         self.baseWidth = baseWidth
         self.scale = scale
         self.expansion = expansion
+        self.n_mel_bins = n_mel_bins
+        self.sampling_rate = sampling_rate
 
         self.conv1 = nn.Conv2d(
             1, m_channels, kernel_size=3, stride=1, padding=1, bias=False)
@@ -258,3 +265,22 @@ class ERes2NetV2(nn.Module):
             return embed_b
         else:
             return embed_a
+
+    def inference(self, x: torch.Tensor):
+        """
+        Perform inference using the ERes2Net-V2 model.
+        Args:
+            x: A 3D tensor (with batch dimension) containing the audio data in mono, 16kHz format (shape: (N, 1, T)).
+        Returns:
+            The output of the model after inference (shape: (N, D_timbre) with D_timbre = 192).
+        """
+        with torch.inference_mode():
+            features = torch.stack([
+                Kaldi.fbank(
+                    feature, # Add channel dimension for Kaldi.fbank
+                    num_mel_bins=self.n_mel_bins, 
+                    sample_frequency=self.sampling_rate
+                ) for feature in x
+            ])  # (N, num_frames, num_mel_bins)
+            features = features - features.mean(dim=1, keepdim=True)  # Normalize features
+            return self.forward(features) # (N, D_timbre)

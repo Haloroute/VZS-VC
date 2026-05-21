@@ -2,6 +2,8 @@
 # Configuration for the ERes2Net-V2 model used as the timbre encoder module
 eres2net-v2_module:
   checkpoint_path: 'checkpoints/timbre_encoder.safetensors'
+  n_mel_bins: 80
+  sampling_rate: 16000
 
 # Configuration for the FCPE model used as the pitch encoder module
 fcpe_module:
@@ -13,6 +15,11 @@ fcpe_module:
 # Configuration for the Zipformer2 model used as the content encoder module
 zipformer2_module:
   checkpoint_path: 'checkpoints/content_encoder.safetensors'
+  dither: 0
+  high_freq: -400
+  n_mel_bins: 80
+  sampling_rate: 16000
+  snip_edges: False
 
 # Configuration for the LocalRMS method used as the amplitude encoder module
 local_rms_module:

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 @dataclass
 class ERes2NetV2ModuleConfig:
     checkpoint_path: str = 'checkpoints/timbre_encoder.safetensors'
+    n_mel_bins: int = 80
+    sampling_rate: int = 16000
 
 # Configuration for the FCPE model used as the pitch encoder module
 @dataclass
@@ -18,6 +20,11 @@ class FCPEModuleConfig:
 @dataclass
 class Zipformer2ModuleConfig:
     checkpoint_path: str = 'checkpoints/content_encoder.safetensors'
+    dither: int = 0
+    high_freq: int = -400
+    n_mel_bins: int = 80
+    sampling_rate: int = 16000
+    snip_edges: bool = False
 
 # Configuration for the LocalRMS method used as the amplitude encoder module
 @dataclass

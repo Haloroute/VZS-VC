@@ -31,7 +31,10 @@ def load_timbre_encoder(device: torch.device, config: ERes2NetV2ModuleConfig = N
         config = ERes2NetV2ModuleConfig()
 
     # Initialize the Timbre Encoder model
-    model = ERes2NetV2()
+    model = ERes2NetV2(
+        n_mel_bins=config.n_mel_bins,
+        sampling_rate=config.sampling_rate
+    )
 
     # Load the pretrained checkpoint
     load_model(model, config.checkpoint_path)
@@ -74,7 +77,12 @@ def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = 
     # Lấy max của encoder_dim làm chiều đầu ra cho encoder_dim của model
     model = EncoderModel(
         encoder_embed=encoder_embed,
-        encoder=encoder
+        encoder=encoder,
+        dither=config.dither,
+        high_freq=config.high_freq,
+        n_mel_bins=config.n_mel_bins,
+        sampling_rate=config.sampling_rate,
+        snip_edges=config.snip_edges
     )
 
     # Load the pretrained checkpoint
