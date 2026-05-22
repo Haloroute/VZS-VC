@@ -184,46 +184,47 @@ class NeuCodec(
             audio: torch.Tensor [B, 1, T], input audio
 
         Returns:
-            pre_vq_emb: torch.Tensor [B, F, 8], 50Hz FSQ embedding before codes
-            acoustic_emb: torch.Tensor [B, D, F], 50Hz acoutic embedding
+            tuple: A tuple containing:
+                - pre_vq_emb (torch.Tensor): [B, F, 8], 50Hz FSQ embedding before codes.
+                - acoustic_emb (torch.Tensor): [B, D, F], 50Hz acoustic embedding.
         """
-         
-        # prepare inputs
-        y = self._prepare_audio(audio)  
-        all_semantic_features = []
-        for i in range(y.size(0)):
-            semantic_features = (
-                self.feature_extractor(
-                    y[i, :].cpu(),
-                    sampling_rate=16_000,
-                    return_tensors="pt",
+        with torch.inference_mode():
+            # prepare inputs
+            y = self._prepare_audio(audio)  
+            all_semantic_features = []
+            for i in range(y.size(0)):
+                semantic_features = (
+                    self.feature_extractor(
+                        y[i, :].cpu(),
+                        sampling_rate=16_000,
+                        return_tensors="pt",
+                    )
+                    .input_features.to(self.device)
                 )
-                .input_features.to(self.device)
+                all_semantic_features.append(semantic_features)
+            semantic_features = torch.vstack(all_semantic_features)
+        
+            # acoustic encoding
+            acoustic_emb = self.CodecEnc(y.to(self.device))
+            acoustic_emb = acoustic_emb.transpose(1, 2)
+
+            # semantic encoding
+            semantic_output = (
+                self.semantic_model(semantic_features[:]).hidden_states[16].transpose(1, 2)
             )
-            all_semantic_features.append(semantic_features)
-        semantic_features = torch.vstack(all_semantic_features)
-       
-        # acoustic encoding
-        acoustic_emb = self.CodecEnc(y.to(self.device))
-        acoustic_emb = acoustic_emb.transpose(1, 2)
+            semantic_encoded = self.SemanticEncoder_module(semantic_output)
 
-        # semantic encoding
-        semantic_output = (
-            self.semantic_model(semantic_features[:]).hidden_states[16].transpose(1, 2)
-        )
-        semantic_encoded = self.SemanticEncoder_module(semantic_output)
+            # concatenate embeddings
+            if acoustic_emb.shape[-1] != semantic_encoded.shape[-1]:
+                min_len = min(acoustic_emb.shape[-1], semantic_encoded.shape[-1])
+                acoustic_emb = acoustic_emb[:, :, :min_len]
+                semantic_encoded = semantic_encoded[:, :, :min_len]        
+            concat_emb = torch.cat([semantic_encoded, acoustic_emb], dim=1)
+            concat_emb = self.fc_prior(concat_emb.transpose(1, 2)).transpose(1, 2)
 
-        # concatenate embeddings
-        if acoustic_emb.shape[-1] != semantic_encoded.shape[-1]:
-            min_len = min(acoustic_emb.shape[-1], semantic_encoded.shape[-1])
-            acoustic_emb = acoustic_emb[:, :, :min_len]
-            semantic_encoded = semantic_encoded[:, :, :min_len]        
-        concat_emb = torch.cat([semantic_encoded, acoustic_emb], dim=1)
-        concat_emb = self.fc_prior(concat_emb.transpose(1, 2)).transpose(1, 2)
-
-        # Return the continuous embedding before quantization instead of the discrete codes.
-        pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
-        return pre_vq_emb, acoustic_emb
+            # Return the continuous embedding before quantization instead of the discrete codes.
+            pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
+            return pre_vq_emb, acoustic_emb.permute(0, 2, 1) # [B, F, D]
     
     def decode_code(self, fsq_codes: torch.Tensor) -> torch.Tensor:
         """
@@ -248,12 +249,13 @@ class NeuCodec(
         Returns:
             recon: torch.Tensor [B, 1, T], reconstructed 24kHz audio
         """
-        _, fsq_codes, _ = self.generator(pre_vq_emb, vq=True, skip_vq=False, skip_project_in=True)
-        fsq_post_emb = self.generator.quantizer.get_output_from_indices(fsq_codes.transpose(1, 2))
-        fsq_post_emb = fsq_post_emb.transpose(1, 2)
-        fsq_post_emb = self.fc_post_a(fsq_post_emb.transpose(1, 2)).transpose(1, 2) 
-        recon = self.generator(fsq_post_emb.transpose(1, 2), vq=False)[0]
-        return recon
+        with torch.inference_mode():
+            _, fsq_codes, _ = self.generator(pre_vq_emb, vq=True, skip_vq=False, skip_project_in=True)
+            fsq_post_emb = self.generator.quantizer.get_output_from_indices(fsq_codes.transpose(1, 2))
+            fsq_post_emb = fsq_post_emb.transpose(1, 2)
+            fsq_post_emb = self.fc_post_a(fsq_post_emb.transpose(1, 2)).transpose(1, 2) 
+            recon = self.generator(fsq_post_emb.transpose(1, 2), vq=False)[0]
+            return recon
     
 
 class DistillNeuCodec(NeuCodec):
@@ -330,48 +332,50 @@ class DistillNeuCodec(NeuCodec):
             audio: torch.Tensor [B, 1, T], input audio
 
         Returns:
-            pre_vq_emb: torch.Tensor [B, F, 8], 50Hz FSQ embedding before codes
-            fsq_emb: torch.Tensor [B, D, F], 50Hz acoutic embedding
+            tuple: A tuple containing:
+                - pre_vq_emb (torch.Tensor): [B, F, 8], 50Hz FSQ embedding before codes.
+                - acoustic_emb (torch.Tensor): [B, D, F], 50Hz acoustic embedding.
         """
-        # Like `encode_code` but returns the continuous embedding before quantization instead of the discrete codes.
-        # prepare inputs
-        y = self._prepare_audio(audio)
-        
-        all_semantic_features = []
-        for i in range(y.size(0)):
-            semantic_features = (
-                self.feature_extractor(
-                    F.pad(y[i, :].cpu(), (160, 160)),
-                    sampling_rate=16_000,
-                    return_tensors="pt",
+        with torch.inference_mode():
+            # Like `encode_code` but returns the continuous embedding before quantization instead of the discrete codes.
+            # prepare inputs
+            y = self._prepare_audio(audio)
+            
+            all_semantic_features = []
+            for i in range(y.size(0)):
+                semantic_features = (
+                    self.feature_extractor(
+                        F.pad(y[i, :].cpu(), (160, 160)),
+                        sampling_rate=16_000,
+                        return_tensors="pt",
+                    )
+                    .input_values.to(self.device)
+                    .squeeze(0)
                 )
-                .input_values.to(self.device)
-                .squeeze(0)
-            )
-            all_semantic_features.append(semantic_features)
-        semantic_features = torch.vstack(all_semantic_features)
-    
-        # acoustic encoding
-        fsq_emb = self.fc_sq_prior(self.codec_encoder(y.to(self.device)))
-        fsq_emb = fsq_emb.transpose(1, 2)
+                all_semantic_features.append(semantic_features)
+            semantic_features = torch.vstack(all_semantic_features)
+        
+            # acoustic encoding
+            fsq_emb = self.fc_sq_prior(self.codec_encoder(y.to(self.device)))
+            fsq_emb = fsq_emb.transpose(1, 2)
 
-        # semantic encoding
-        semantic_target = self.semantic_model(
-            semantic_features
-        ).last_hidden_state.transpose(1, 2)
-        semantic_target = self.SemanticEncoder_module(semantic_target)
+            # semantic encoding
+            semantic_target = self.semantic_model(
+                semantic_features
+            ).last_hidden_state.transpose(1, 2)
+            semantic_target = self.SemanticEncoder_module(semantic_target)
 
-        if fsq_emb.shape[-1] != semantic_target.shape[-1]:
-            min_len = min(fsq_emb.shape[-1], semantic_target.shape[-1])
-            fsq_emb = fsq_emb[:, :, :min_len]
-            semantic_target = semantic_target[:, :, :min_len]
+            if fsq_emb.shape[-1] != semantic_target.shape[-1]:
+                min_len = min(fsq_emb.shape[-1], semantic_target.shape[-1])
+                fsq_emb = fsq_emb[:, :, :min_len]
+                semantic_target = semantic_target[:, :, :min_len]
 
-        concat_emb = torch.cat([semantic_target, fsq_emb], dim=1)
-        concat_emb = self.fc_prior(concat_emb.transpose(1, 2)).transpose(1, 2)
+            concat_emb = torch.cat([semantic_target, fsq_emb], dim=1)
+            concat_emb = self.fc_prior(concat_emb.transpose(1, 2)).transpose(1, 2)
 
-        # Return the continuous embedding before quantization instead of the discrete codes.
-        pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
-        return pre_vq_emb, fsq_emb
+            # Return the continuous embedding before quantization instead of the discrete codes.
+            pre_vq_emb, _, _ = self.generator(concat_emb, vq=True, skip_vq=True, skip_project_in=False)
+            return pre_vq_emb, fsq_emb.permute(0, 2, 1) # [B, F, D 
 
 
 class NeuCodecOnnxDecoder(

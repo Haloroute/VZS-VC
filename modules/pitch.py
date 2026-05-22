@@ -41,14 +41,17 @@ class FCPE(nn.Module):
         Extract pitch using TorchFCPE.
         
         Args:
-            audio (torch.Tensor): Input audio waveform tensor, shape (B, T) or (1, T)
+            audio (torch.Tensor): Input audio waveform tensor, shape (B, T, 1) where B is batch size and T is the number of time steps.
         
         Returns:
             torch.Tensor: Extracted F0 sequence, shape (B, T_out) where T_out is the interpolated target length.
         """
-        audio_length = audio.shape[-1]
+        audio_length = audio.shape[1]
         f0_target_length = (audio_length // self.hop_size) + 1
-        
+        peak = torch.max(torch.abs(audio)) # Get the maximum absolute value in the audio tensor
+        if peak > 1:
+            audio = audio / (peak + 1e-8) # Normalize the audio to be in the range [-1, 1]
+
         f0 = self.model.infer(
             audio,
             sr=self.sampling_rate,
@@ -60,3 +63,15 @@ class FCPE(nn.Module):
             output_interp_target_length=f0_target_length
         )
         return f0
+
+    def inference(self, x: torch.Tensor):
+        """
+        Perform inference using the FCPE model.
+        Args:
+            x: A 3D tensor (with batch dimension) containing the audio data in mono, 16kHz format (shape: (N, 1, T)).
+        Returns:
+            The output of the model after inference (shape: (N, T_pitch) with T_pitch being the number of time steps).
+        """
+        with torch.inference_mode():
+            x = x.permute(0, 2, 1)  # (N, T, 1)
+            return self.forward(x).squeeze(-1) # (N, T_pitch)

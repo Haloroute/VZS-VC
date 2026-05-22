@@ -15,5 +15,3 @@ torchcodec
 # Data handling and utilities
 datasets[audio]
 huggingface_hub
-PyYAML
-tensordict

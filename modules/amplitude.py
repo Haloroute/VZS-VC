@@ -30,14 +30,11 @@ class LocalRMSAmplitude(nn.Module):
         Forward pass.
         
         Args:
-            x (torch.Tensor): Tensor âm thanh đầu vào có kích thước (B, T).
+            x (torch.Tensor): Tensor âm thanh đầu vào có kích thước (B, 1, T).
             
         Returns:
             torch.Tensor: Tensor chứa đường viền cường độ cục bộ, kích thước (B, T // hop_size + 1).
         """
-        # Thêm chiều channel: (B, T) -> (B, 1, T)
-        x = x.unsqueeze(1)
-        
         # 1. Bình phương tín hiệu
         x_sq = x ** 2
         
@@ -52,3 +49,14 @@ class LocalRMSAmplitude(nn.Module):
         
         # Loại bỏ chiều channel: (B, 1, T) -> (B, T)
         return rms.squeeze(1)
+
+    def inference(self, x: torch.Tensor):
+        """
+        Perform inference using LocalRMS algorithm.
+        Args:
+            x: A 3D tensor (with batch dimension) containing the audio data in mono, 16kHz format (shape: (N, 1, T)).
+        Returns:
+            The output of the model after inference (shape: (N, T_amplitude) with T_amplitude being the number of time steps).
+        """
+        with torch.inference_mode():
+            return self.forward(x) # (N, T_amplitude)
