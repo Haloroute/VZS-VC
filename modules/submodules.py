@@ -423,6 +423,7 @@ class DiTBlock(nn.Module):
         """
         N, T, _ = target.shape
         _, S, _ = source.shape
+
         # Step 0: Create padding masks for target and source sequences (True for padding positions, False for valid positions)
         target_pad_mask = torch.arange(T, device=target.device).unsqueeze(0) >= target_length.unsqueeze(1) # (N, T)
         source_pad_mask = torch.arange(S, device=source.device).unsqueeze(0) >= source_length.unsqueeze(1) # (N, S)

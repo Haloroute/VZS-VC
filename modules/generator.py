@@ -98,9 +98,9 @@ class MeanFlowsGenerator(nn.Module):
 
     def forward(
         self,
-        content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor, start_timestep: Tensor, end_timestep: Tensor, pre_vq: Tensor | None = None,
+        content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor, start_timestep: Tensor, end_timestep: Tensor, zt: Tensor,
         content_length: Tensor | None = None, pitch_length: Tensor | None = None, amplitude_length: Tensor | None = None, timbre_length: Tensor | None = None,
-        pre_vq_length: Tensor | None = None, drop_conditioning: Tensor | None = None
+        zt_length: Tensor | None = None, drop_cond: Tensor | None = None
     ) -> Tensor:
         """
         Forward pass for the MeanFlowsGenerator.
@@ -112,53 +112,45 @@ class MeanFlowsGenerator(nn.Module):
 
             start_timestep (Tensor): Start time step (r) tensor of shape (N,). Note that 0.0 <= r <= t <= 1.0.
             end_timestep (Tensor): End time step (t) tensor of shape (N,). Note that 0.0 <= r <= t <= 1.0.
-            pre_vq (Tensor | None): Pre-VQ features for teacher forcing during training, shape (N, T, D_codec). Should be None during inference.
+            zt (Tensor): Noise-imbued latent features, shape (N, T, D_codec).
 
             content_length (Tensor | None): Lengths of content sequences for masking, shape (N,). Should be None if no masking is required.
             pitch_length (Tensor | None): Lengths of pitch sequences for masking, shape (N,). Should be None if no masking is required.
             amplitude_length (Tensor | None): Lengths of amplitude sequences for masking, shape (N,). Should be None if no masking is required.
             timbre_length (Tensor | None): Lengths of timbre sequences for masking, shape (N,). Should be None if no masking is required.
-            pre_vq_length (Tensor | None): Lengths of pre-VQ sequences for masking, shape (N,). Should be None if no masking is required.
-        
-            drop_conditioning (Tensor | None): Optional tensor of shape (N,) indicating which samples in the batch should have their conditioning features dropped for regularization.
+            zt_length (Tensor | None): Lengths of zt sequences for masking, shape (N,). Should be None if no masking is required.
+
+            drop_cond (Tensor | None): Optional tensor of shape (N,) indicating which samples in the batch should have their conditioning features dropped for regularization.
             Should be binary (0 or 1) and can be None if no conditioning dropout is applied.
         Returns:
             Tensor: Output tensor of shape (N, T, D_codec).
         """
-        assert content.size(0) == pitch.size(0) == amplitude.size(0) == timbre.size(0), "Batch size of all input features must be the same."
-        assert (pre_vq is None) or (content.size(0) == pre_vq.size(0)), "Batch size of pre_vq must be the same as other features if provided."
-        assert (drop_conditioning is None) or (content.size(0) == drop_conditioning.size(0)), "Batch size of drop_conditioning must be the same as other features if provided."
+        assert content.size(0) == pitch.size(0) == amplitude.size(0) == timbre.size(0) == zt.size(0), "Batch size of all input features must be the same."
+        assert (drop_cond is None) or (content.size(0) == drop_cond.size(0)), "Batch size of drop_cond must be the same as other features if provided."
         assert (content_length is None) or (content.size(0) == content_length.size(0)), "Batch size of content_length must be the same as content if provided."
         assert (pitch_length is None) or (pitch.size(0) == pitch_length.size(0)), "Batch size of pitch_length must be the same as pitch if provided."
         assert (amplitude_length is None) or (amplitude.size(0) == amplitude_length.size(0)), "Batch size of amplitude_length must be the same as amplitude if provided."
         assert (timbre_length is None) or (timbre.size(0) == timbre_length.size(0)), "Batch size of timbre_length must be the same as timbre if provided."
-        assert (pre_vq_length is None) or (pre_vq is not None and pre_vq.size(0) == pre_vq_length.size(0)), "Batch size of pre_vq_length must be the same as pre_vq if provided."
+        assert (zt_length is None) or (zt.size(0) == zt_length.size(0)), "Batch size of zt_length must be the same as zt if provided."
 
         assert (content_length is None) or (content_length.max().item() <= content.size(1)), "Max content length cannot exceed content feature length."
         assert (pitch_length is None) or (pitch_length.max().item() <= pitch.size(1)), "Max pitch length cannot exceed pitch feature length."
         assert (amplitude_length is None) or (amplitude_length.max().item() <= amplitude.size(1)), "Max amplitude length cannot exceed amplitude feature length."
         assert (timbre_length is None) or (timbre_length.max().item() <= timbre.size(1)), "Max timbre length cannot exceed timbre feature length."
-        assert (pre_vq_length is None) or (pre_vq is not None and pre_vq_length.max().item() <= pre_vq.size(1)), "Max pre_vq length cannot exceed pre_vq feature length."
-        
-        N, _, _ = content.shape
+        assert (zt_length is None) or (zt_length.max().item() <= zt.size(1)), "Max zt length cannot exceed zt feature length."
 
-        # Step 1: Interpolate content, pitch and amplitude features to the same temporal resolution as pre_vq (if provided) or the maximum length among them.
+        N, T, _ = zt.shape
+
+        # Step 1: Interpolate content, pitch and amplitude features to the same temporal resolution as zt (if provided) or the maximum length among them.
         if content_length is None: content_length = torch.full((N,), content.size(1), dtype=torch.long, device=content.device) # (N,)
         if pitch_length is None: pitch_length = torch.full((N,), pitch.size(1), dtype=torch.long, device=pitch.device) # (N,)
         if amplitude_length is None: amplitude_length = torch.full((N,), amplitude.size(1), dtype=torch.long, device=amplitude.device) # (N,)
         if timbre_length is None: timbre_length = torch.full((N,), timbre.size(1), dtype=torch.long, device=timbre.device) # (N,)
-        if pre_vq is not None and pre_vq_length is None: pre_vq_length = torch.full((N,), pre_vq.size(1), dtype=torch.long, device=pre_vq.device) # (N,)
-
-        if pre_vq is not None:
-            interpolated_length: Tensor = pre_vq_length # (N,)
-            max_interp_len: int = pre_vq.size(1)
-        else:
-            interpolated_length: Tensor = torch.max(torch.max(content_length, pitch_length), amplitude_length) # (N,)
-            max_interp_len: int = interpolated_length.max().item()
+        if zt_length is None: zt_length: Tensor = torch.maximum(torch.maximum(content_length, pitch_length), amplitude_length).clamp(max=T) # (N,)
 
         # Create a common destination index grid for the entire batch
-        grid: Tensor = torch.arange(max_interp_len, device=content.device).unsqueeze(0).expand(N, -1) # (N, max_interp_len)
-        pad_mask: Tensor = grid >= interpolated_length.unsqueeze(1) # (N, max_interp_len)
+        grid: Tensor = torch.arange(T, device=content.device).unsqueeze(0).expand(N, -1) # (N, T)
+        pad_mask: Tensor = grid >= zt_length.unsqueeze(1) # (N, T)
 
         def batched_nearest_interpolate(x: Tensor, src_len: Tensor, dst_len: Tensor) -> Tensor:
             """
@@ -170,29 +162,29 @@ class MeanFlowsGenerator(nn.Module):
                 dst_len (Tensor): Target sequence lengths of shape (N,).
 
             Returns:
-                Tensor: Interpolated tensor of shape (N, max_interp_len) for 2D or (N, max_interp_len, D) for 3D.
+                Tensor: Interpolated tensor of shape (N, T) for 2D or (N, T, D) for 3D.
             """
             # Calculate the nearest mapping ratio: index = floor(grid * (src_len / dst_len))
             ratio: Tensor = src_len.float() / dst_len.float() # (N,)
-            src_indices: Tensor = (grid.float() * ratio.unsqueeze(1)).long() # (N, max_interp_len)
+            src_indices: Tensor = (grid.float() * ratio.unsqueeze(1)).long() # (N, T)
 
             # Limit indices to prevent out-of-bounds errors in the padding region
             max_idx: Tensor = (src_len.unsqueeze(1) - 1).clamp(min=0) # (N, 1)
-            src_indices: Tensor = torch.clamp(src_indices, min=torch.zeros_like(max_idx), max=max_idx) # (N, max_interp_len)
+            src_indices: Tensor = torch.clamp(src_indices, min=torch.zeros_like(max_idx), max=max_idx) # (N, T)
 
             if x.dim() == 3:
-                src_indices_expanded: Tensor = src_indices.unsqueeze(-1).expand(-1, -1, x.size(-1)) # (N, max_interp_len, D_content)
-                out: Tensor = torch.gather(x, dim=1, index=src_indices_expanded) # (N, max_interp_len, D_content)
-                out[pad_mask] = 0.0 # (N, max_interp_len, D_content)
+                src_indices_expanded: Tensor = src_indices.unsqueeze(-1).expand(-1, -1, x.size(-1)) # (N, T, D_content)
+                out: Tensor = torch.gather(x, dim=1, index=src_indices_expanded) # (N, T, D_content)
+                out[pad_mask] = 0.0 # (N, T, D_content)
             else:
-                out: Tensor = torch.gather(x, dim=1, index=src_indices) # (N, max_interp_len)
-                out[pad_mask] = 0.0 # (N, max_interp_len)
-            
+                out: Tensor = torch.gather(x, dim=1, index=src_indices) # (N, T)
+                out[pad_mask] = 0.0 # (N, T)
+
             return out
 
-        content_interp: Tensor = batched_nearest_interpolate(content, content_length, interpolated_length) # (N, max_interp_len, D_content)
-        pitch_interp: Tensor = batched_nearest_interpolate(pitch, pitch_length, interpolated_length) # (N, max_interp_len)
-        amplitude_interp: Tensor = batched_nearest_interpolate(amplitude, amplitude_length, interpolated_length) # (N, max_interp_len)
+        content_interp: Tensor = batched_nearest_interpolate(content, content_length, zt_length) # (N, T, D_content)
+        pitch_interp: Tensor = batched_nearest_interpolate(pitch, pitch_length, zt_length) # (N, T)
+        amplitude_interp: Tensor = batched_nearest_interpolate(amplitude, amplitude_length, zt_length) # (N, T)
 
         # Step 2: Embed pitch and amplitude features using logarithmic embedding, and time features using sinusoidal encoding + MLP.
         pitch_emb: Tensor = self.pitch_embedding(pitch_interp) # (N, T) -> (N, T, D_pitch)
@@ -206,33 +198,24 @@ class MeanFlowsGenerator(nn.Module):
         time_emb: Tensor = torch.cat([start_emb, elapse_emb], dim=-1)  # (N, 2 * D_time)
         time_emb: Tensor = self.time_projection(time_emb)  # (N, D_time)
 
-        # Step 3: Create noise-imbued pre_vq features by adding noise to pre_vq (if provided) or creating noise from scratch (if pre_vq is None).
-        if pre_vq is not None:
-            t: Tensor = torch.maximum(end_timestep, start_timestep).view(N, 1, 1)
-            noise: Tensor = torch.randn_like(pre_vq) # (N, T, D_codec)
-            z_t: Tensor = (t * noise) + ((1 - t) * pre_vq) # (N, T, D_codec)
-        else:
-            z_t: Tensor = torch.randn(N, max_interp_len, self.d_codec, device=content.device) # (N, T, D_codec)
+        zt[pad_mask] = 0.0 # (N, T, D_codec)
 
-        z_t[pad_mask] = 0.0 # (N, T, D_codec)
-
-        # Step 4: Concatenate content, pitch and amplitude features, and project to d_model dimension. Also project timbre features to d_model dimension.
+        # Step 3: Concatenate content, pitch and amplitude features, and project to d_model dimension. Also project timbre features to d_model dimension.
         cpa: Tensor = torch.cat([content_interp, pitch_emb, amplitude_emb], dim=-1) # (N, T, D_content + D_pitch + D_amplitude)
         source: Tensor = timbre # (N, T, D_timbre)
 
-        # Step 4.5: Apply conditioning dropout if specified
-        if drop_conditioning is not None and drop_conditioning.any():
+        # Step 4: Apply conditioning dropout if specified
+        if drop_cond is not None and drop_cond.any():
             # Ép về dạng (N, 1, 1) để tận dụng PyTorch Broadcasting
-            drop_mask: Tensor = drop_conditioning.view(-1, 1, 1).bool() # (N, 1, 1)
+            drop_mask: Tensor = drop_cond.view(-1, 1, 1).bool() # (N, 1, 1)
             
             # Masked_fill sẽ tự động khớp kích thước với cpa và timbre
             cpa = cpa.masked_fill(drop_mask, 0.0) # (N, T, D_content + D_pitch + D_amplitude)
             source = source.masked_fill(drop_mask, 0.0) # (N, T, D_timbre)
 
         cpa_proj: Tensor = self.cpa_projection(cpa) # (N, T, D_model)
-        z_t_proj: Tensor = self.d_codec_projection(z_t) # (N, T, D_model)
-
-        target: Tensor = cpa_proj + z_t_proj # (N, T, D_model)
+        zt_proj: Tensor = self.d_codec_projection(zt) # (N, T, D_model)
+        target: Tensor = cpa_proj + zt_proj # (N, T, D_model)
 
         # Step 5: Pass through DiT blocks with time conditioning and cross-attention to timbre features.
         for block in self.dit_blocks:
@@ -240,7 +223,7 @@ class MeanFlowsGenerator(nn.Module):
                 target=target,
                 source=source,
                 timestep=time_emb,
-                target_length=interpolated_length,
+                target_length=zt_length,
                 source_length=timbre_length
             )
 
