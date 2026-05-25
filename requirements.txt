@@ -1,14 +1,14 @@
 # Python dependencies
 # Deep learning libraries
+local_attention
 torch
 torchaudio
-transformers
-
-# Model-specific libraries
 torchfcpe
+torchtune
+transformers
+vector_quantize_pytorch
 
 # Data processing libraries
-librosa
 pyworld
 torchcodec
 
