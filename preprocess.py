@@ -4,7 +4,7 @@ import numpy as np
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datasets import Audio, Dataset, DatasetDict, Features
+from datasets import Array2D, Audio, Dataset, DatasetDict, Features, Sequence, Value
 from numpy import ndarray
 from torch import Tensor
 from torchaudio.transforms import Resample
@@ -161,32 +161,64 @@ def extract_embeddings():
             f_codec = executor.submit(inference_fn, codec.encode_pre_vq, original_audio_tensor, streams[4])
 
             # Wait for all encoders to finish and get the results
-            torch.cuda.synchronize() # Ensure all streams have finished processing
             amplitude_embedding: Tensor = f_amplitude.result() # (1, T)
             content_embedding: Tensor = f_content.result() # (1, T, D_content)
             pitch_embedding: Tensor = f_pitch.result() # (1, T)
             timbre_embedding: Tensor = f_timbre.result() # (1, D_timbre)
             pre_vq_embedding, acoustic_embedding = f_codec.result() # (1, T, D_pre_vq), (1, T, D_acoustic)
+            torch.cuda.synchronize() # Ensure all streams have finished processing
+
+            # Validate that the extracted embeddings do not contain NaN values before yielding the sample
+            if amplitude_embedding.isnan().any():
+                raise ValueError(f"Amplitude embedding contains NaN values for sample at index {idx}.")
+            if content_embedding.isnan().any():
+                raise ValueError(f"Content embedding contains NaN values for sample at index {idx}.")
+            if pitch_embedding.isnan().any():
+                raise ValueError(f"Pitch embedding contains NaN values for sample at index {idx}.")
+            if timbre_embedding.isnan().any():
+                raise ValueError(f"Timbre embedding contains NaN values for sample at index {idx}.")
+            if pre_vq_embedding.isnan().any():
+                raise ValueError(f"Pre-VQ embedding contains NaN values for sample at index {idx}.")
+            if acoustic_embedding.isnan().any():
+                raise ValueError(f"Acoustic embedding contains NaN values for sample at index {idx}.")
+
+            # Build the new yielded dictionary, excluding un-serializable audio columns
+            new_sample = {
+                k: v for k, v in sample.items() 
+                if k not in [dataset_config.audio_column, perturbed_dataset_config.perturbed_audio_column]
+            }
 
             # Store the extracted embeddings in the sample dictionary
-            del sample[dataset_config.audio_column], sample[perturbed_dataset_config.perturbed_audio_column] # Remove original and perturbed audio from the sample to save space, we only keep the embeddings
-            sample[preprocessed_dataset_config.amplitude_column] = amplitude_embedding.squeeze(0).numpy(force=True)
-            sample[preprocessed_dataset_config.content_column] = content_embedding.squeeze(0).numpy(force=True)
-            sample[preprocessed_dataset_config.pitch_column] = pitch_embedding.squeeze(0).numpy(force=True)
-            sample[preprocessed_dataset_config.timbre_column] = timbre_embedding.squeeze(0).numpy(force=True)
-            sample[preprocessed_dataset_config.pre_vq_column] = pre_vq_embedding.squeeze(0).numpy(force=True)
-            sample[preprocessed_dataset_config.acoustic_column] = acoustic_embedding.squeeze(0).numpy(force=True)
+            # del sample[dataset_config.audio_column], sample[perturbed_dataset_config.perturbed_audio_column] # Remove original and perturbed audio from the sample to save space, we only keep the embeddings
+            new_sample[preprocessed_dataset_config.amplitude_column] = amplitude_embedding.squeeze(0).numpy(force=True)
+            new_sample[preprocessed_dataset_config.content_column] = content_embedding.squeeze(0).numpy(force=True)
+            new_sample[preprocessed_dataset_config.pitch_column] = pitch_embedding.squeeze(0).numpy(force=True)
+            new_sample[preprocessed_dataset_config.timbre_column] = timbre_embedding.squeeze(0).numpy(force=True)
+            new_sample[preprocessed_dataset_config.pre_vq_column] = pre_vq_embedding.squeeze(0).numpy(force=True)
+            new_sample[preprocessed_dataset_config.acoustic_column] = acoustic_embedding.squeeze(0).numpy(force=True)
 
-            return sample
+            return new_sample
         except Exception as e:
             print(f"Error processing sample at index {idx} during embedding extraction! Error: {e}")
             raise e # Reraise the exception to be handled by the map function's error handling
+
+    # Define the features for the new dataset, which include the original features from the perturbed dataset plus new features for each of the extracted embeddings.
+    preprocessed_features = Features({
+        **{k: v for k, v in perturbed_datasets["train"].features.items() if k != perturbed_dataset_config.perturbed_audio_column and k != dataset_config.audio_column}, # Original features from perturbed dataset
+        preprocessed_dataset_config.amplitude_column: Sequence(Value("float32")), # New feature for amplitude embedding
+        preprocessed_dataset_config.content_column: Array2D(shape=(None, 512), dtype="float32"), # New feature for content embedding
+        preprocessed_dataset_config.pitch_column: Sequence(Value("float32")), # New feature for pitch embedding
+        preprocessed_dataset_config.timbre_column: Sequence(Value("float32"), length=192), # New feature for timbre embedding
+        preprocessed_dataset_config.pre_vq_column: Array2D(shape=(None, 8), dtype="float32"), # New feature for pre-VQ embedding
+        preprocessed_dataset_config.acoustic_column: Array2D(shape=(None, 1024), dtype="float32"), # New feature for acoustic embedding
+    })
 
     # Create a new dataset with the extracted embeddings and the same features as the perturbed dataset, plus new features for the embeddings.
     preprocessed_dataset: DatasetDict = perturbed_datasets.map(
         embedding_extraction_fn,
         with_indices=True,
-        num_proc=0,
+        remove_columns=[dataset_config.audio_column, perturbed_dataset_config.perturbed_audio_column],
+        features=preprocessed_features,
         desc="Extracting embeddings from perturbed dataset"
     )
 
