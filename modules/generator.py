@@ -22,21 +22,21 @@ class MeanFlowsGenerator(nn.Module):
     ):
         """
         Initialize the MeanFlowsGenerator module.
-        
+
         Args:
-            d_time (int): The dimensionality of the time embedding (after sinusoidal encoding + MLP). 
+            d_time (int): The dimensionality of the time embedding (after sinusoidal encoding + MLP).
             d_timbre (int): The dimensionality of the timbre embedding (came from NeuCodec acoustic features). Should be 1024.
             d_content (int): The dimensionality of the content embedding (came from VietASR content features). Should be 512.
             d_pitch (int): The dimensionality of the pitch embedding (after logarithmic embedding).
             d_amplitude (int): The dimensionality of the amplitude embedding (after logarithmic embedding).
-            d_codec (int): The dimensionality of the codec embedding (used for Finite Scalar Quantization).
+            d_codec (int): The dimensionality of the codec embedding (used for Finite Scalar Quantization). Should be 8.
 
             n_pitch (int): The number of bins for pitch embedding.
             min_pitch (float): The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).
             max_pitch (float): The maximum value for pitch embedding (should be a positive value). Should be around 1244.5 (D#6 note).
             n_amplitude (int): The number of bins for amplitude embedding.
             min_amplitude (float): The minimum value for amplitude embedding (should be a positive value). Should be around 0.01.
-            max_amplitude (float): The maximum value for amplitude embedding (should be a positive value). Should be around 1.0.
+            max_amplitude (float): The maximum value for amplitude embedding (should be a positive value). Should be around 0.85.
             time_scale (float): The scaling factor for time before passing through sinusoidal encoding. Default is 1000.0.
 
             d_model (int): The dimensionality of the model (feature dimension).
@@ -104,6 +104,7 @@ class MeanFlowsGenerator(nn.Module):
     ) -> Tensor:
         """
         Forward pass for the MeanFlowsGenerator.
+
         Args:
             content (Tensor): Content features of shape (N, T_content, D_content).
             pitch (Tensor): Pitch features of shape (N, T_pitch).
@@ -122,6 +123,7 @@ class MeanFlowsGenerator(nn.Module):
 
             drop_cond (Tensor | None): Optional tensor of shape (N,) indicating which samples in the batch should have their conditioning features dropped for regularization.
             Should be binary (0 or 1) and can be None if no conditioning dropout is applied.
+
         Returns:
             Tensor: Output tensor of shape (N, T, D_codec).
         """

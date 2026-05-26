@@ -1,31 +1,33 @@
 # Utility functions for loading and saving modules, and other common operations related to the modules.
 import torch
-import torch.nn as nn
 
 from dataclasses import asdict
 from safetensors.torch import load_model
 
+from .configs import (
+    ERes2NetV2ModuleConfig,
+    FCPEModuleConfig,
+    LocalRMSModuleConfig,
+    MeanFlowsGeneratorModuleConfig,
+    MeanFlowsAdaptedLossConfig,
+    NeuCodecModuleConfig,
+    Zipformer2ModuleConfig
+)
 from modules import (
     Conv2dSubsampling,
     EncoderModel,
     ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
+    MeanFlowsGenerator,
+    MeanFlowsAdaptedLoss,
     NeuCodec,
-    ScheduledFloat,
     Zipformer2
-)
-from .configs import (
-    ERes2NetV2ModuleConfig,
-    FCPEModuleConfig,
-    LocalRMSModuleConfig,
-    NeuCodecModuleConfig,
-    Zipformer2ModuleConfig
 )
 
 
 # Functions to load pretrained model for timbre encoder (ERes2Net-V2)
-def load_timbre_encoder(device: torch.device, config: ERes2NetV2ModuleConfig = None):
+def load_timbre_encoder(device: torch.device, config: ERes2NetV2ModuleConfig = None) -> ERes2NetV2:
     # If no config is provided, use the default one
     if config is None:
         config = ERes2NetV2ModuleConfig()
@@ -45,7 +47,7 @@ def load_timbre_encoder(device: torch.device, config: ERes2NetV2ModuleConfig = N
 
 
 # Functions to load pretrained model for pitch encoder (FCPE)
-def load_pitch_encoder(device: torch.device, config: FCPEModuleConfig = None):
+def load_pitch_encoder(device: torch.device, config: FCPEModuleConfig = None) -> FCPE:
     # If no config is provided, use the default one
     if config is None:
         config = FCPEModuleConfig()
@@ -59,7 +61,7 @@ def load_pitch_encoder(device: torch.device, config: FCPEModuleConfig = None):
 
 
 # Functions to load pretrained model for content encoder (Zipformer2)
-def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = None):
+def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = None) -> Zipformer2:
     # If no config is provided, use the default one
     if config is None:
         config = Zipformer2ModuleConfig()
@@ -94,7 +96,7 @@ def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = 
 
 
 # Functions to load module for amplitude encoder (LocalRMS)
-def load_amplitude_encoder(device: torch.device, config: LocalRMSModuleConfig = None):
+def load_amplitude_encoder(device: torch.device, config: LocalRMSModuleConfig = None) -> LocalRMSAmplitude:
     # If no config is provided, use the default one
     if config is None:
         config = LocalRMSModuleConfig()
@@ -107,7 +109,7 @@ def load_amplitude_encoder(device: torch.device, config: LocalRMSModuleConfig = 
 
 
 # Functions to load module for neural codec (NeuCodec)
-def load_codec(device: torch.device, config: NeuCodecModuleConfig = None):
+def load_codec(device: torch.device, config: NeuCodecModuleConfig = None) -> NeuCodec:
     # If no config is provided, use the default one
     if config is None:
         config = NeuCodecModuleConfig()
@@ -117,3 +119,29 @@ def load_codec(device: torch.device, config: NeuCodecModuleConfig = None):
     # Set the model to evaluation mode
     model.to(device).eval()
     return model
+
+
+# Functions to load module for the main VC model (Mean Flows Generator)
+def load_generator(device: torch.device, config: MeanFlowsGeneratorModuleConfig = None) -> MeanFlowsGenerator:
+    # If no config is provided, use the default one
+    if config is None:
+        config = MeanFlowsGeneratorModuleConfig()
+
+    model = MeanFlowsGenerator(**asdict(config))
+
+    # Set the model to evaluation mode
+    model.to(device).eval()
+    return model
+
+
+# Functions to load module for the loss function (Mean Flows Adapted Loss)
+def load_loss_fn(device: torch.device, config: MeanFlowsAdaptedLossConfig = None) -> MeanFlowsAdaptedLoss:
+    # If no config is provided, use the default one
+    if config is None:
+        config = MeanFlowsAdaptedLossConfig()
+
+    loss_fn = MeanFlowsAdaptedLoss(**asdict(config))
+
+    # Set the model to evaluation mode
+    loss_fn.to(device).eval()
+    return loss_fn

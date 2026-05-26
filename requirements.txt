@@ -10,8 +10,12 @@ vector_quantize_pytorch
 
 # Data processing libraries
 pyworld
+tensordict
 torchcodec
+torchdata
 
-# Data handling and utilities
+# Utility libraries
 datasets[audio]
 huggingface_hub
+safetensors
+tqdm

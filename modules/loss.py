@@ -32,9 +32,10 @@ class MeanFlowsAdaptedLoss(nn.Module):
         model: MeanFlowsGenerator, target: Tensor, epsilon: Tensor,
         content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor,
         start_timestep: Tensor, end_timestep: Tensor,
+        target_length: Tensor | None = None,
         content_length: Tensor | None = None, pitch_length: Tensor | None = None,
         amplitude_length: Tensor | None = None, timbre_length: Tensor | None = None,
-        target_length: Tensor | None = None, drop_cond: Tensor | None = None
+        drop_cond: Tensor | None = None
     ):
         """
         Computes the adapted loss between predictions and targets.
@@ -52,11 +53,11 @@ class MeanFlowsAdaptedLoss(nn.Module):
             start_timestep (Tensor): Start time step (r) tensor of shape (N,). Note that 0.0 <= r <= t <= 1.0.
             end_timestep (Tensor): End time step (t) tensor of shape (N,). Note that 0.0 <= r <= t <= 1.0.
 
-            content_length (Tensor | None): Lengths of content sequences for masking, shape (N,). Should be None if no masking is required.
-            pitch_length (Tensor | None): Lengths of pitch sequences for masking, shape (N,). Should be None if no masking is required.
-            amplitude_length (Tensor | None): Lengths of amplitude sequences for masking, shape (N,). Should be None if no masking is required.
-            timbre_length (Tensor | None): Lengths of timbre sequences for masking, shape (N,). Should be None if no masking is required.
-            target_length (Tensor | None): Lengths of target sequences for masking, shape (N,). Should be None if no masking is required.
+            target_length (Tensor | None): Length of target sequences for masking, shape (N,). Should be None if no masking is required.
+            content_length (Tensor | None): Length of content sequences for masking, shape (N,). Should be None if no masking is required.
+            pitch_length (Tensor | None): Length of pitch sequences for masking, shape (N,). Should be None if no masking is required.
+            amplitude_length (Tensor | None): Length of amplitude sequences for masking, shape (N,). Should be None if no masking is required.
+            timbre_length (Tensor | None): Length of timbre sequences for masking, shape (N,). Should be None if no masking is required.
 
             drop_cond (Tensor | None): Optional tensor of shape (N,) indicating which samples in the batch should have their conditioning features dropped for regularization.
             Should be binary (0 or 1) and can be None if no conditioning dropout is applied.
@@ -74,7 +75,7 @@ class MeanFlowsAdaptedLoss(nn.Module):
 
         with torch.no_grad():
             # Step 2: Conditional pass mixed with unconditional pass (depending on drop_cond)
-            u_cond: Tensor = model.forward(
+            u_cond: Tensor = model(
                 content=content, pitch=pitch, amplitude=amplitude, timbre=timbre,
                 start_timestep=end_timestep, end_timestep=end_timestep,
                 zt=zt, content_length=content_length, pitch_length=pitch_length,
@@ -88,7 +89,7 @@ class MeanFlowsAdaptedLoss(nn.Module):
             else:
                 fully_drop_cond: Tensor = torch.ones(N, dtype=torch.bool, device=target.device) # (N,)
 
-            u_uncond: Tensor = model.forward(
+            u_uncond: Tensor = model(
                 content=content, pitch=pitch, amplitude=amplitude, timbre=timbre,
                 start_timestep=end_timestep, end_timestep=end_timestep,
                 zt=zt, content_length=content_length, pitch_length=pitch_length,
@@ -101,7 +102,7 @@ class MeanFlowsAdaptedLoss(nn.Module):
 
         # Step 5: Create the model function for JVP
         def model_fn(zt: Tensor, r: Tensor, t: Tensor) -> Tensor:
-            return model.forward(
+            return model(
                 content=content, pitch=pitch, amplitude=amplitude, timbre=timbre,
                 start_timestep=r, end_timestep=t,
                 zt=zt, content_length=content_length, pitch_length=pitch_length,
@@ -132,9 +133,9 @@ class MeanFlowsAdaptedLoss(nn.Module):
 
         # Step 10: Apply masking and proper reduction to get the final loss value
         if target_length is not None:
-            mask: Tensor = torch.arange(T, device=target.device).unsqueeze(0) < target_length.unsqueeze(1) # (N, T)
+            mask: Tensor = (torch.arange(T, device=target.device).unsqueeze(0) < target_length.unsqueeze(1)).float() # (N, T)
             adapted_loss = adapted_loss * mask
-            final_loss: Tensor = adapted_loss.sum() / mask.sum() # Only average over valid (non-padded) time steps
+            final_loss: Tensor = adapted_loss.sum() / (mask.sum() + self.c) # Only average over valid (non-padded) time steps
         else:
             final_loss: Tensor = adapted_loss.mean()
 

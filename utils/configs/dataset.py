@@ -1,4 +1,4 @@
-# Configuration class for the TTS model and training process
+# Configuration class for the datasets used in the VC system
 from dataclasses import dataclass
 
 # Configuration for the original VieNeu-TTS-140h dataset
@@ -36,13 +36,15 @@ class VieNeuTTSPerturbedDatasetConfig:
 
 @dataclass
 class VieNeuTTSPreprocessedDatasetConfig:
-    # dataset_config: VieNeuTTSDatasetConfig = VieNeuTTSDatasetConfig()
-    # perturbation_config: VieNeuTTSPerturbationConfig = VieNeuTTSPerturbationConfig()
-    # perturbed_dataset_config: VieNeuTTSPerturbedDatasetConfig = VieNeuTTSPerturbedDatasetConfig()
     path: str = "Haloroute/VieNeu-TTS-140h-preprocessed"
+    train_split: str = "train" # Split name for training data in the preprocessed dataset
+    val_split: str = "test" # Split name for validation data in the preprocessed dataset
+
     amplitude_column: str = "amplitude_embedding" # Column name for amplitude embedding in the preprocessed dataset
     content_column: str = "content_embedding" # Column name for content embedding in the preprocessed dataset
     pitch_column: str = "pitch_embedding" # Column name for pitch embedding in the preprocessed dataset
     timbre_column: str = "timbre_embedding" # Column name for timbre embedding in the preprocessed dataset
     pre_vq_column: str = "pre_vq_embedding" # Column name for pre-VQ embedding in the preprocessed dataset
     acoustic_column: str = "acoustic_embedding" # Column name for acoustic embedding in the preprocessed dataset
+
+    seed: int = 42 # Random seed for reproducibility when loading the preprocessed dataset
