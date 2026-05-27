@@ -57,7 +57,7 @@ class LogEmbedding(nn.Module):
         bin_indices = torch.clamp(bin_indices, min=1, max=self.n_bins - 1)
         
         # Gán bin 0 cho các vị trí vô thanh
-        bin_indices[unvoiced_mask] = 0
+        bin_indices = torch.where(unvoiced_mask, torch.zeros_like(bin_indices), bin_indices)
         
         # Lấy embedding từ bin indices
         embeddings = self.embedding(bin_indices)
