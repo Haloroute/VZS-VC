@@ -2,6 +2,7 @@
 # Deep learning libraries
 local_attention
 torch
+torchao
 torchaudio
 torchfcpe
 torchtune
