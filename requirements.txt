@@ -20,3 +20,4 @@ datasets[audio]
 huggingface_hub
 safetensors
 tqdm
+wandb

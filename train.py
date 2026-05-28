@@ -1,5 +1,5 @@
 # Main training loop
-import datasets, datetime, math, os, random, torch
+import datasets, datetime, math, os, random, torch, wandb
 import numpy as np
 
 from dataclasses import asdict
@@ -43,6 +43,24 @@ def train_model():
     train_config = TrainConfig()
     validation_config = ValidationConfig()
 
+    # Start a new wandb run to track this script.
+    run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="topaz-and-numpy",
+        # Set the wandb project where this run will be logged.
+        project="VZS-VC",
+        # Track hyperparameters and run metadata.
+        config={
+            "model_config": asdict(model_config),
+            "train_config": asdict(train_config),
+            "validation_config": asdict(validation_config),
+            "dataset_config": asdict(dataset_config)
+        }
+    )
+    run.define_metric("epoch")
+    run.define_metric("train/*", step_metric="epoch")
+    run.define_metric("val/*", step_metric="epoch")
+
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
         dataset_config.path,
@@ -66,6 +84,7 @@ def train_model():
     train_loader = StatefulDataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
+        shuffle=True,
         num_workers=n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
@@ -73,6 +92,7 @@ def train_model():
     val_loader = StatefulDataLoader(
         val_dataset,
         batch_size=validation_config.batch_size,
+        shuffle=False,
         num_workers=n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
@@ -110,6 +130,7 @@ def train_model():
         # Training phase
         print(f"Epoch {epoch}/{train_config.n_epochs}")
         model.train()
+        ema_model.train()
         loss_fn.train()
         train_loss = 0.0
 
@@ -181,9 +202,10 @@ def train_model():
             checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
             save_checkpoint(
                 checkpoint_path,
-                model, optimizer, train_loader, epoch,
+                model, ema_model, optimizer, train_loader, epoch,
                 step=i, loss=train_loss / ((i + 1) * train_config.batch_size)
             )
+            run.save(checkpoint_path)
 
             print(f"Checkpoint saved for epoch {epoch} at step {i}.")
             raise e
@@ -191,10 +213,11 @@ def train_model():
         # Calculate and print the average training loss for this epoch
         avg_train_loss = train_loss / n_train_samples
         print(f"Average training loss: {avg_train_loss:.4f}")
+        run.log({"epoch": epoch, "train/loss": avg_train_loss})
 
         # Validation phase (optional, can be done every few epochs to save time)
         if epoch % validation_config.validate_every_n_epochs == 0: # Validate every few epochs
-            model.eval()
+            ema_model.eval()
             loss_fn.eval()
             val_loss = 0.0
 
@@ -210,9 +233,9 @@ def train_model():
                         batch = inject_val_data(batch)
 
                         # Forward pass and loss computation
-                        # loss = loss_fn(model, **batch)
+                        # loss = loss_fn(ema_model, **batch)
                         loss = loss_fn(
-                            model=model,
+                            model=ema_model,
                             target=batch['target'],
                             epsilon=batch['epsilon'],
                             content=batch['content'],
@@ -235,16 +258,22 @@ def train_model():
             # Calculate and print the average validation loss for this epoch
             avg_val_loss = val_loss / n_val_samples
             print(f"Average validation loss: {avg_val_loss:.4f}")
+            run.log({"epoch": epoch, "val/loss": avg_val_loss})
 
         # Saving phase (save a checkpoint every few epochs)
         if epoch % train_config.save_every_n_epochs == 0:
+            checkpoint_filename = f"checkpoint_epoch_{epoch}.pth"
+            checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
             save_checkpoint(
-                os.path.join(train_config.checkpoint_folder, f"checkpoint_epoch_{epoch}.pth"),
-                model, optimizer, train_loader, epoch, 
+                checkpoint_path,
+                model, ema_model, optimizer, train_loader, epoch, 
                 loss=avg_train_loss
             )
+            run.save(checkpoint_path)
             print(f"Checkpoint saved for epoch {epoch}.")
 
+    # Finish the wandb run after training is complete
+    run.finish()
 
 def main():
     print("This is the main training script. You can run specific training functions from here if needed.")

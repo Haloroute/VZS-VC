@@ -59,3 +59,4 @@ checkpoints/
 .vscode/
 examples/
 logs/
+wandb/

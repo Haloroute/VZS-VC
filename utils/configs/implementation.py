@@ -4,10 +4,12 @@ from dataclasses import dataclass
 # Configuration for the loss function used during training
 @dataclass
 class MeanFlowsAdaptedLossConfig:
-    omega: float = 0.2 # Guidance scale for sample. Default is 0.2.
-    kappa: float = 0.9 # Guidance scale for conditioning output. Default is 0.9.
+    omega: float = 1.0 # Guidance scale for sample. Default is 1.0.
+    kappa: float = 0.5 # Guidance scale for conditioning output. Default is 0.5.
     p: float = 1.0 # Power to which the loss is raised. Default is 1.0.
     c: float = 1e-3 # Small constant to prevent division by zero. Default is 1e-3.
+    epsilon: float = 2 ** (-25/3) # Small constant to calculate the approximate JVP using differentiation approximation. 
+                                  # Default is 2^(-25/3) for Central Finite Difference approximation, and 2^-12 for Forward Finite Difference approximation.
 
 # Configuration for the training process
 @dataclass
@@ -17,8 +19,8 @@ class TrainConfig:
 
     n_epochs: int = 100 # The number of epochs to train the model.
     batch_size: int = 128 # The batch size for training and validation.
-    lr: float = 2e-4 # The learning rate for the optimizer.
-    beta: tuple[float, float] = (0.9, 0.98) # The beta parameters for the AdamW optimizer.
+    lr: float = 1e-4 # The learning rate for the optimizer.
+    beta: tuple[float, float] = (0.9, 0.95) # The beta parameters for the AdamW optimizer.
     weight_decay: float = 0.0 # The weight decay for regularization.
     ema_decay: float = 0.9999 # The decay rate for the Exponential Moving Average (EMA) of model parameters.
 
@@ -36,5 +38,5 @@ class ValidationConfig:
     device: str = "cuda" # The device to use for validation (e.g., "cuda" for GPU or "cpu" for CPU).
     amp_enable: bool = True # Whether to use automatic mixed precision (AMP) during validation for faster computation and reduced memory usage.
 
-    validate_every_n_epochs: int = 5 # The frequency (in epochs) at which to perform validation during training.
+    validate_every_n_epochs: int = 1 # The frequency (in epochs) at which to perform validation during training.
     batch_size: int = 128 # The batch size for validation.
