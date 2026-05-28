@@ -7,6 +7,7 @@ from datasets import DatasetBuilder
 from functools import partial
 from tensordict import TensorDict
 from torch import Tensor
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
@@ -185,6 +186,7 @@ def train_model():
 
                 # Backpropagation and optimization step
                 loss.backward()
+                clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
                 optimizer.step()
                 ema_model.update_parameters(model)
 
