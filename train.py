@@ -64,10 +64,10 @@ def train_model():
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
         dataset_config.path,
-        streaming=True
+        streaming=False
     )
     train_dataset, val_dataset = dataset[dataset_config.train_split].with_format("torch"), dataset[dataset_config.val_split].with_format("torch")
-    # train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
+    train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
     # val_dataset = val_dataset.shuffle(seed=dataset_config.seed)
     print("Preprocessed dataset loaded and shuffled successfully.")
 
@@ -84,7 +84,6 @@ def train_model():
     train_loader = StatefulDataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
-        shuffle=True,
         num_workers=n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
@@ -92,7 +91,6 @@ def train_model():
     val_loader = StatefulDataLoader(
         val_dataset,
         batch_size=validation_config.batch_size,
-        shuffle=False,
         num_workers=n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
