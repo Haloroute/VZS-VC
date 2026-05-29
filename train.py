@@ -9,6 +9,7 @@ from datasets import DatasetBuilder
 from functools import partial
 from tensordict import TensorDict
 from torch import Tensor
+from torch.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
@@ -111,6 +112,7 @@ def train_model():
         start_factor=train_config.start_factor,
         total_iters=train_config.n_warmup_epochs
     )
+    scaler = GradScaler(device=train_config.device, enabled=train_config.amp_enable)
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
     torch.manual_seed(train_config.seed)
     np.random.seed(train_config.seed)
@@ -153,7 +155,7 @@ def train_model():
                 optimizer.zero_grad()
 
                 # Use autocast for mixed precision training if enabled in the configuration
-                with torch.amp.autocast(device_type=train_config.device, dtype=torch.bfloat16, enabled=train_config.amp_enable):
+                with autocast(device_type=train_config.device, dtype=torch.float16, enabled=train_config.amp_enable):
                     # Forward pass and loss computation
                     output: Tensor = model(
                         content=batch['content'],
@@ -173,9 +175,11 @@ def train_model():
                     n_correct, n_total = calculate_accuracy(output, batch['target'])
 
                 # Backpropagation and optimization step
-                loss.backward()
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update() 
                 ema_model.update_parameters(model)
 
                 # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
@@ -229,7 +233,7 @@ def train_model():
                     batch: TensorDict = batch.to(validation_config.device, non_blocking=True)
 
                     # Use autocast for mixed precision validation if enabled in the configuration
-                    with torch.amp.autocast(device_type=validation_config.device, dtype=torch.bfloat16, enabled=validation_config.amp_enable):
+                    with autocast(device_type=validation_config.device, dtype=torch.float16, enabled=validation_config.amp_enable):
                         # Forward pass and loss computation
                         output: Tensor = ema_model(
                             content=batch['content'],
