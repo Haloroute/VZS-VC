@@ -5,10 +5,11 @@ import numpy as np
 from dataclasses import asdict
 from datasets import DatasetBuilder
 from functools import partial
-from numpy import ndarray
 from tensordict import TensorDict
 from torch import Tensor
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LinearLR
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm.auto import tqdm
@@ -103,6 +104,7 @@ def train_model():
     model = torch.compile(model, dynamic=True)
     loss_fn = torch.compile(loss_fn, dynamic=True)
     print("Model and loss function loaded successfully.")
+    print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
 
     # Setup the optimizer, EMA model, random seed, and other training components
     optimizer = AdamW(
@@ -110,6 +112,11 @@ def train_model():
         lr=train_config.lr,
         betas=train_config.beta,
         weight_decay=train_config.weight_decay
+    )
+    scheduler = LinearLR(
+        optimizer,
+        start_factor=train_config.start_factor,
+        total_iters=train_config.n_warmup_epochs
     )
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
     torch.manual_seed(train_config.seed)
@@ -159,7 +166,7 @@ def train_model():
 
                     # Forward pass and loss computation
                     # loss = loss_fn(model, **batch)
-                    loss = loss_fn(
+                    loss: Tensor = loss_fn(
                         model=model,
                         target=batch['target'],
                         epsilon=batch['epsilon'],
@@ -179,6 +186,7 @@ def train_model():
 
                 # Backpropagation and optimization step
                 loss.backward()
+                clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
                 optimizer.step()
                 ema_model.update_parameters(model)
 
@@ -187,7 +195,8 @@ def train_model():
 
                 # Set the description of the progress bar to show the current average loss
                 t.set_postfix({
-                    "loss": train_loss / ((i + 1) * train_config.batch_size)
+                    "loss": f"{loss.item():.5f}",
+                    "avg_loss": f"{train_loss / ((i + 1) * train_config.batch_size):.5f}"
                 })
 
         except Exception as e:
@@ -200,7 +209,7 @@ def train_model():
             checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
             save_checkpoint(
                 checkpoint_path,
-                model, ema_model, optimizer, train_loader, epoch,
+                model, ema_model, optimizer, scheduler, train_loader, epoch,
                 step=i, loss=train_loss / ((i + 1) * train_config.batch_size)
             )
             run.save(checkpoint_path)
@@ -210,7 +219,7 @@ def train_model():
 
         # Calculate and print the average training loss for this epoch
         avg_train_loss = train_loss / n_train_samples
-        print(f"Average training loss: {avg_train_loss:.4f}")
+        print(f"Average training loss: {avg_train_loss:.5f}")
         run.log({"epoch": epoch, "train/loss": avg_train_loss})
 
         # Validation phase (optional, can be done every few epochs to save time)
@@ -232,7 +241,7 @@ def train_model():
 
                         # Forward pass and loss computation
                         # loss = loss_fn(ema_model, **batch)
-                        loss = loss_fn(
+                        loss: Tensor = loss_fn(
                             model=ema_model,
                             target=batch['target'],
                             epsilon=batch['epsilon'],
@@ -255,7 +264,7 @@ def train_model():
 
             # Calculate and print the average validation loss for this epoch
             avg_val_loss = val_loss / n_val_samples
-            print(f"Average validation loss: {avg_val_loss:.4f}")
+            print(f"Average validation loss: {avg_val_loss:.5f}")
             run.log({"epoch": epoch, "val/loss": avg_val_loss})
 
         # Saving phase (save a checkpoint every few epochs)
@@ -264,11 +273,14 @@ def train_model():
             checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
             save_checkpoint(
                 checkpoint_path,
-                model, ema_model, optimizer, train_loader, epoch, 
+                model, ema_model, optimizer, scheduler, train_loader, epoch, 
                 loss=avg_train_loss
             )
             run.save(checkpoint_path)
             print(f"Checkpoint saved for epoch {epoch}.")
+
+        # Update the learning rate scheduler
+        scheduler.step()
 
     # Finish the wandb run after training is complete
     run.finish()
