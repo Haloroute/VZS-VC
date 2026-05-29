@@ -25,6 +25,7 @@ from utils.configs import (
 )
 from utils.dataset import collate_fn
 from utils.logger import save_checkpoint
+from utils.metrics import calculate_accuracy
 from utils.modules import load_generator
 
 
@@ -51,8 +52,10 @@ def train_model():
         }
     )
     run.define_metric("epoch")
-    run.define_metric("train/*", step_metric="epoch")
-    run.define_metric("val/*", step_metric="epoch")
+    run.define_metric("train/loss", step_metric="epoch")
+    run.define_metric("train/accuracy", step_metric="epoch")
+    run.define_metric("val/loss", step_metric="epoch")
+    run.define_metric("val/accuracy", step_metric="epoch")
 
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
@@ -77,14 +80,14 @@ def train_model():
     train_loader = StatefulDataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
-        # num_workers=n_workers,
+        num_workers=n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
     val_loader = StatefulDataLoader(
         val_dataset,
         batch_size=validation_config.batch_size,
-        # num_workers=n_workers,
+        num_workers=n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
@@ -93,7 +96,7 @@ def train_model():
     # Create the model and load the pretrained modules
     model: VoiceGenerator = load_generator(train_config.device)
     loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
-    # model = torch.compile(model, dynamic=True)
+    model = torch.compile(model, dynamic=True)
     print("Model and loss function loaded successfully.")
     print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
 
@@ -127,8 +130,7 @@ def train_model():
         print(f"Epoch {epoch}/{train_config.n_epochs}")
         model.train()
         ema_model.train()
-        loss_fn.train()
-        train_loss = 0.0
+        train_loss, train_correct, train_total = 0.0, 0, 0
 
         # Iterate over the training DataLoader with a progress bar
         # try:
@@ -166,6 +168,7 @@ def train_model():
                     target_length=batch['target_length']
                 ) # (N, N_bins, T, D_codec)
                 loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
+                n_correct, n_total = calculate_accuracy(output, batch['target'])
 
             # Backpropagation and optimization step
             loss.backward()
@@ -175,11 +178,15 @@ def train_model():
 
             # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
             train_loss += loss.item() * train_config.batch_size
+            train_correct += n_correct
+            train_total += n_total
 
             # Set the description of the progress bar to show the current average loss
             t.set_postfix({
                 "loss": f"{loss.item():.5f}",
-                "avg_loss": f"{train_loss / ((i + 1) * train_config.batch_size):.5f}"
+                "acc": f"{n_correct / (n_total + 1e-8) * 100:.3f}%",
+                "avg_loss": f"{train_loss / ((i + 1) * train_config.batch_size + 1e-8):.5f}",
+                "avg_acc": f"{train_correct / (train_total + 1e-8) * 100:.3f}%"
             })
 
         # except Exception as e:
@@ -202,15 +209,16 @@ def train_model():
         #     raise e
 
         # Calculate and print the average training loss for this epoch
-        avg_train_loss = train_loss / n_train_samples
+        avg_train_loss = train_loss / (n_train_samples + 1e-8)
+        avg_train_acc = train_correct / (train_total + 1e-8) * 100
         print(f"Average training loss: {avg_train_loss:.5f}")
-        run.log({"epoch": epoch, "train/loss": avg_train_loss})
+        print(f"Average training accuracy: {avg_train_acc:.3f}%")
+        run.log({"epoch": epoch, "train/loss": avg_train_loss, "train/accuracy": avg_train_acc})
 
         # Validation phase (optional, can be done every few epochs to save time)
         if epoch % validation_config.validate_every_n_epochs == 0: # Validate every few epochs
             ema_model.eval()
-            loss_fn.eval()
-            val_loss = 0.0
+            val_loss, val_correct, val_total = 0.0, 0, 0
 
             # Iterate over the validation DataLoader with a progress bar
             with torch.inference_mode():
@@ -233,14 +241,19 @@ def train_model():
                             target_length=batch['target_length']
                         )
                         loss: Tensor = loss_fn(output, batch['target'])
+                        n_correct, n_total = calculate_accuracy(output, batch['target'])
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
                     val_loss += loss.item() * validation_config.batch_size
+                    val_correct += n_correct
+                    val_total += n_total
 
             # Calculate and print the average validation loss for this epoch
-            avg_val_loss = val_loss / n_val_samples
+            avg_val_loss = val_loss / (n_val_samples + 1e-8)
+            avg_val_acc = val_correct / (val_total + 1e-8) * 100
             print(f"Average validation loss: {avg_val_loss:.5f}")
-            run.log({"epoch": epoch, "val/loss": avg_val_loss})
+            print(f"Average validation accuracy: {avg_val_acc:.3f}%")
+            run.log({"epoch": epoch, "val/loss": avg_val_loss, "val/accuracy": avg_val_acc})
 
         # Saving phase (save a checkpoint every few epochs)
         if epoch % train_config.save_every_n_epochs == 0:
