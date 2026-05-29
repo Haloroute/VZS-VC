@@ -37,15 +37,15 @@ class LocalRMSModuleConfig:
 class NeuCodecModuleConfig:
     pretrained_model_name_or_path: str = 'neuphonic/neucodec'
 
-# Configuration for the Mean Flows Generator model used as the main VC model
+# Configuration for the Voice Generator model used as the main VC model
 @dataclass
-class MeanFlowsGeneratorModuleConfig:
-    d_time: int = 64 # The dimensionality of the time embedding (after sinusoidal encoding + MLP).
-    d_timbre: int = 1024 # The dimensionality of the timbre embedding (came from NeuCodec acoustic features). Should be 1024.
+class VoiceGeneratorModuleConfig:
     d_content: int = 512 # The dimensionality of the content embedding (came from VietASR content features). Should be 512.
     d_pitch: int = 64 # The dimensionality of the pitch embedding (after logarithmic embedding).
     d_amplitude: int = 64 # The dimensionality of the amplitude embedding (after logarithmic embedding).
+    d_timbre: int = 1024 # The dimensionality of the timbre embedding (came from NeuCodec acoustic features). Should be 1024.
     d_codec: int = 8 # The dimensionality of the codec embedding (used for Finite Scalar Quantization). Should be 8.
+    n_bins: int = 4 # The number of bins for each dimension (used for Finite Scalar Quantization). Should be 4.
 
     n_pitch: int = 128 # The number of bins for pitch embedding.
     min_pitch: float = 32.7 # The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).

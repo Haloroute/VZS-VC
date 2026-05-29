@@ -7,13 +7,13 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.swa_utils import AveragedModel
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from modules import MeanFlowsGenerator
+from modules import VoiceGenerator
 
 
 # Function to save a checkpoint of the model, optimizer, and training state
 def save_checkpoint(
     checkpoint_path: str,
-    model: MeanFlowsGenerator,
+    model: VoiceGenerator,
     averaged_model: AveragedModel,
     optimizer: Optimizer,
     scheduler: LRScheduler,
@@ -27,7 +27,7 @@ def save_checkpoint(
 
     Args:
         checkpoint_path (str): The path where the checkpoint will be saved.
-        model (MeanFlowsGenerator): The model to save.
+        model (VoiceGenerator): The model to save.
         averaged_model (AveragedModel): The averaged model to save.
         optimizer (Optimizer): The optimizer to save.
         scheduler (LRScheduler): The learning rate scheduler to save.
@@ -52,7 +52,7 @@ def save_checkpoint(
 # Function to load a checkpoint and restore the model, optimizer, and training state
 def load_checkpoint(
     checkpoint_path: str,
-    model: MeanFlowsGenerator,
+    model: VoiceGenerator,
     averaged_model: AveragedModel,
     optimizer: Optimizer,
     scheduler: LRScheduler,
@@ -62,7 +62,7 @@ def load_checkpoint(
     Load a checkpoint and restore the model, optimizer, and training state.
 
     Args:
-        model (MeanFlowsGenerator): The model to restore.
+        model (VoiceGenerator): The model to restore.
         averaged_model (AveragedModel): The averaged model to restore.
         optimizer (Optimizer): The optimizer to restore.
         scheduler (LRScheduler): The learning rate scheduler to restore.

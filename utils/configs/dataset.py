@@ -46,5 +46,6 @@ class VieNeuTTSPreprocessedDatasetConfig:
     timbre_column: str = "timbre_embedding" # Column name for timbre embedding in the preprocessed dataset
     pre_vq_column: str = "pre_vq_embedding" # Column name for pre-VQ embedding in the preprocessed dataset
     acoustic_column: str = "acoustic_embedding" # Column name for acoustic embedding in the preprocessed dataset
-
+    
+    ignore_value: float = -100.0 # The padding value that should be ignored in the target sequences.
     seed: int = 42 # Random seed for reproducibility when loading the preprocessed dataset

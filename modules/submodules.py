@@ -64,34 +64,6 @@ class LogEmbedding(nn.Module):
         return embeddings
 
 
-# Sinusoidal positional embedding module for embedding time steps, adapted from the original Transformer paper.
-class SinusoidalPositionalEncoding(nn.Module):
-    """
-    Sinusoidal positional embedding module for adding positional information to the input embeddings.
-    """
-    def __init__(self, d_model: int, max_len: int = 1000):
-        super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # Shape (1, max_len, d_model)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Create positional embedding for the input tensor.
-        
-        Args:
-            x (Tensor): Indices tensor of shape (N,).
-        
-        Returns:
-            Tensor: Positional embedding Tensor, shape (N, D).
-        """
-        return self.pe[0, x.long()]
-
-
 # Rotary positional embedding module for adding positional information to the input embeddings.
 class RotaryPositionalEmbedding(nn.Module):
     """
@@ -303,12 +275,7 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         rope_k = self.rope(k, sin_cos)  # (N, n_heads, T, d_head)
 
         # Step 4: Prepare attention mask
-        attn_mask = None
-        if key_padding_mask is not None:
-            # F.scaled_dot_product_attention expects True for elements that SHOULD take part in attention
-            # key_padding_mask has True for padding, so we must invert it (~).
-            # Reshape to (N, 1, 1, T) so it broadcasts across n_heads and queries.
-            attn_mask = (~key_padding_mask).view(N, 1, 1, T) # (N, 1, 1, T)
+        attn_mask = (~key_padding_mask).view(N, 1, 1, T) # (N, 1, 1, T)
 
         # Step 5: Compute scaled dot-product attention
         attn_output = F.scaled_dot_product_attention(
@@ -327,62 +294,52 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         return output
 
 
-class DiTBlock(nn.Module):
+class TransformerBlock(nn.Module):
     """
-    DiT-like block module that combines Transformer Decoder layers with adaRMSN-Zero blocks.
+    Transformer Decoder-like block module that combines Transformer Decoder layers with RoPE.
     """
     def __init__(
         self,
         d_model: int, n_heads: int, d_ff: int,
-        d_time: int, d_timbre: int, dropout: float = 0.1
+        d_timbre: int, dropout: float = 0.1
     ):
         """
-        Initialize the DiTBlock with specified parameters for the Transformer Decoder and conditioning dimensions.
+        Initialize the TransformerBlock with specified parameters for the Transformer Decoder and conditioning dimensions.
 
         Args:
             d_model (int): Dimensionality of the model (input/output of the Transformer layers).
             n_heads (int): Number of attention heads in the multi-head attention mechanism.
             d_ff (int): Dimensionality of the feed-forward network.
-            d_time (int): Dimensionality of the time conditioning.
             d_timbre (int): Dimensionality of the timbre conditioning.
             dropout (float): Dropout probability.
         """
         super().__init__()
-        # Constants for the DiT Block
+        # Constants for the Transformer Block
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_ff = d_ff
-        self.d_time = d_time
         self.d_timbre = d_timbre
         self.dropout = dropout
 
         # Multi-Head Self-Attention Layer
-        self.norm_1 = nn.RMSNorm(d_model, elementwise_affine=False)
+        self.norm_1 = nn.RMSNorm(d_model)
         self.self_attention = MultiheadSelfAttentionWithRoPE(d_model, n_heads, dropout)
 
         # Multi-Head Cross-Attention Layer
-        self.norm_2 = nn.RMSNorm(d_model, elementwise_affine=False)
+        self.norm_2 = nn.RMSNorm(d_model)
         self.cross_attention = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, kdim=d_timbre, vdim=d_timbre, batch_first=True)
 
         # Feed-Forward Network (MLP)
-        self.norm_3 = nn.RMSNorm(d_model, elementwise_affine=False)
+        self.norm_3 = nn.RMSNorm(d_model)
         self.mlp = MLP(d_model, d_ff, d_model, dropout)
-
-        # AdaRMSN-Zero blocks for time conditioning
-        self.time_projection = nn.Linear(d_time, 6 * d_model) # 6 parameters for AdaRMSN-Zero (3 x pre-scale + 3 x post-scale)
 
         # Initialize parameters
         self.init_params()
 
     def init_params(self, std: float = 0.02):
         """
-        Initialize the parameters of the DiTBlock using zero initialization for linear layers and truncated normal initialization for attention layers.
+        Initialize the parameters of the TransformerBlock using zero initialization for linear layers and truncated normal initialization for attention layers.
         """
-        # Initialize time projection layer
-        nn.init.zeros_(self.time_projection.weight)
-        if self.time_projection.bias is not None:
-            nn.init.zeros_(self.time_projection.bias)
-
         # Initialize attention layers using truncated normal initialization
         self.self_attention.init_params(std=std)
         for attn in [self.cross_attention]:
@@ -405,21 +362,20 @@ class DiTBlock(nn.Module):
 
     def forward(
         self,
-        target: Tensor, source: Tensor, timestep: Tensor,
+        target: Tensor, source: Tensor,
         target_length: Tensor, source_length: Tensor
     ) -> Tensor:
         """
-        Forward pass for the DiT Block.
+        Forward pass for the Transformer Block.
         
         Args:
             target (Tensor): Target tensor of shape (N, T, D_model), came from the previous layer.
             source (Tensor): Source tensor of shape (N, S, D_timbre), came from the timbre conditioning.
-            timestep (Tensor): Time conditioning tensor of shape (N, D_time).
             target_length (Tensor): Lengths of the target sequences (N,).
             source_length (Tensor): Lengths of the source sequences (N,).
 
         Returns:
-            Tensor: Output tensor of shape (N, T, D_model) after processing through the DiT block.
+            Tensor: Output tensor of shape (N, T, D_model) after processing through the Transformer block.
         """
         N, T, _ = target.shape
         _, S, _ = source.shape
@@ -428,23 +384,19 @@ class DiTBlock(nn.Module):
         target_pad_mask = torch.arange(T, device=target.device).unsqueeze(0) >= target_length.unsqueeze(1) # (N, T)
         source_pad_mask = torch.arange(S, device=source.device).unsqueeze(0) >= source_length.unsqueeze(1) # (N, S)
 
-        # Step 1: AdaRMSN-Zero conditioning for time
-        time_params: Tensor = self.time_projection(timestep).unsqueeze(1)  # (N, 1, 6 * D_model)
-        pre_scale_1, post_scale_1, pre_scale_2, post_scale_2, pre_scale_3, post_scale_3 = time_params.chunk(6, dim=-1) # (N, 1, D_model) each
-
         # Step 2: Multi-Head Self-Attention with AdaRMSN-Zero
-        normed_target_1: Tensor = self.norm_1(target) * (1 + pre_scale_1) # (N, T, D_model)
+        normed_target_1: Tensor = self.norm_1(target) # (N, T, D_model)
         attn_output_1: Tensor = self.self_attention(normed_target_1, key_padding_mask=target_pad_mask) # (N, T, D_model)
-        target = target + attn_output_1 * post_scale_1 # (N, T, D_model)
+        target = target + attn_output_1 # (N, T, D_model)
 
         # Step 3: Multi-Head Cross-Attention with AdaRMSN-Zero
-        normed_target_2: Tensor = self.norm_2(target) * (1 + pre_scale_2) # (N, T, D_model)
+        normed_target_2: Tensor = self.norm_2(target) # (N, T, D_model)
         attn_output_2: Tensor = self.cross_attention(normed_target_2, source, source, key_padding_mask=source_pad_mask)[0] # (N, T, D_model)
-        target = target + attn_output_2 * post_scale_2 # (N, T, D_model)
+        target = target + attn_output_2 # (N, T, D_model)
 
         # Step 4: Feed-Forward Network (MLP) with AdaRMSN-Zero
-        normed_target_3: Tensor = self.norm_3(target) * (1 + pre_scale_3) # (N, T, D_model)
+        normed_target_3: Tensor = self.norm_3(target) # (N, T, D_model)
         mlp_output: Tensor = self.mlp(normed_target_3) # (N, T, D_model)
-        target = target + mlp_output * post_scale_3 # (N, T, D_model)
+        target = target + mlp_output # (N, T, D_model)
 
-        return target
+        return target # (N, T, D_model)
