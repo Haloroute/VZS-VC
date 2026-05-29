@@ -95,7 +95,7 @@ class VoiceGenerator(nn.Module):
         self,
         content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor,
         content_length: Tensor, pitch_length: Tensor, amplitude_length: Tensor, timbre_length: Tensor,
-        target_length: Tensor
+        target: Tensor, target_length: Tensor
     ) -> Tensor:
         """
         Forward pass for the MeanFlowsGenerator.
@@ -111,6 +111,7 @@ class VoiceGenerator(nn.Module):
             amplitude_length (Tensor): Lengths of amplitude sequences for masking, shape (N,).
             timbre_length (Tensor): Lengths of timbre sequences for masking, shape (N,).
 
+            target (Tensor): Target features for teacher forcing during training, shape (N, T, D_codec).
             target_length (Tensor): Lengths of target sequences for interpolation, shape (N,).
 
         Returns:
@@ -130,8 +131,7 @@ class VoiceGenerator(nn.Module):
         # assert (timbre_length is None) or (timbre_length.max().item() <= timbre.size(1)), "Max timbre length cannot exceed timbre feature length."
         # assert (zt_length is None) or (zt_length.max().item() <= zt.size(1)), "Max zt length cannot exceed zt feature length."
 
-        N = target_length.size(0)
-        T = target_length.max()
+        N, T, _ = target.shape # (N, T, D_codec)
 
         # Step 1: Interpolate content, pitch and amplitude features to the same temporal resolution as zt (if provided) or the maximum length among them.
         # if content_length is None: content_length = torch.full((N,), content.size(1), dtype=torch.long, device=content.device) # (N,)

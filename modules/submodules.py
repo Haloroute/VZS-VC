@@ -274,8 +274,9 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         rope_q = self.rope(q, sin_cos)  # (N, n_heads, T, d_head)
         rope_k = self.rope(k, sin_cos)  # (N, n_heads, T, d_head)
 
-        # Step 4: Prepare attention mask
-        attn_mask = (~key_padding_mask).view(N, 1, 1, T) # (N, 1, 1, T)
+        # Step 4: Prepare attention mask as an additive float mask
+        attn_mask = torch.zeros((N, 1, 1, T), dtype=q.dtype, device=device)
+        attn_mask = attn_mask.masked_fill(key_padding_mask.view(N, 1, 1, T), float("-inf"))
 
         # Step 5: Compute scaled dot-product attention
         attn_output = F.scaled_dot_product_attention(
@@ -283,7 +284,7 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
             key=rope_k,
             value=v,
             attn_mask=attn_mask,
-            dropout_p=self.dropout if self.training else 0.0,
+            dropout_p=self.dropout,
             is_causal=False
         ) # (N, n_heads, T, d_head)
 

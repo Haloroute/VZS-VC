@@ -75,19 +75,18 @@ def train_model():
     print(f"Number of validation samples: {n_val_samples}")
 
     # Create DataLoaders for training and validation
-    n_workers = os.cpu_count() - 1 if os.cpu_count() is not None else 0 # Use all available CPU cores minus one for DataLoader workers
     collate_fn_wrapper = partial(collate_fn, config=dataset_config)
     train_loader = StatefulDataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
-        num_workers=n_workers,
+        num_workers=train_config.n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
     val_loader = StatefulDataLoader(
         val_dataset,
         batch_size=validation_config.batch_size,
-        num_workers=n_workers,
+        num_workers=validation_config.n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
@@ -96,7 +95,7 @@ def train_model():
     # Create the model and load the pretrained modules
     model: VoiceGenerator = load_generator(train_config.device)
     loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
-    model = torch.compile(model, dynamic=True)
+    model = torch.compile(model, dynamic=True, fullgraph=True)
     print("Model and loss function loaded successfully.")
     print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
 
@@ -133,80 +132,83 @@ def train_model():
         train_loss, train_correct, train_total = 0.0, 0, 0
 
         # Iterate over the training DataLoader with a progress bar
-        # try:
-        for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
-            # Move the batch to the specified device (GPU or CPU)
-            batch: TensorDict = batch.to(train_config.device, non_blocking=True)
-            # batch is a TensorDict containing:
-            # "content": content_padded, # (N, T_content, D_content)
-            # "pitch": pitch_padded, # (N, T_pitch)
-            # "amplitude": amplitude_padded, # (N, T_amplitude)
-            # "timbre": acoustic_padded, # (N, T_timbre, D_timbre)
-            # "target": pre_vq_padded, # (N, T, D_codec)
+        try:
+            for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
+                # Move the batch to the specified device (GPU or CPU)
+                batch: TensorDict = batch.to(train_config.device, non_blocking=True)
+                # batch is a TensorDict containing:
+                # "content": content_padded, # (N, T_content, D_content)
+                # "pitch": pitch_padded, # (N, T_pitch)
+                # "amplitude": amplitude_padded, # (N, T_amplitude)
+                # "timbre": acoustic_padded, # (N, T_timbre, D_timbre)
+                # "target": pre_vq_padded, # (N, T, D_codec)
 
-            # "content_length": content_length, # (N,)
-            # "pitch_length": pitch_length, # (N,)
-            # "amplitude_length": amplitude_length, # (N,)
-            # "timbre_length": acoustic_length # (N,)
-            # "target_length": pre_vq_length, # (N,)
+                # "content_length": content_length, # (N,)
+                # "pitch_length": pitch_length, # (N,)
+                # "amplitude_length": amplitude_length, # (N,)
+                # "timbre_length": acoustic_length # (N,)
+                # "target_length": pre_vq_length, # (N,)
 
-            # Zero the gradients
-            optimizer.zero_grad()
+                # Zero the gradients
+                optimizer.zero_grad()
 
-            # Use autocast for mixed precision training if enabled in the configuration
-            with torch.amp.autocast(device_type=train_config.device, dtype=torch.bfloat16, enabled=train_config.amp_enable):
-                # Forward pass and loss computation
-                output: Tensor = model.forward(
-                    content=batch['content'],
-                    pitch=batch['pitch'],
-                    amplitude=batch['amplitude'],
-                    timbre=batch['timbre'],
-                    content_length=batch['content_length'],
-                    pitch_length=batch['pitch_length'],
-                    amplitude_length=batch['amplitude_length'],
-                    timbre_length=batch['timbre_length'],
-                    target_length=batch['target_length']
-                ) # (N, N_bins, T, D_codec)
-                loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
-                n_correct, n_total = calculate_accuracy(output, batch['target'])
+                # Use autocast for mixed precision training if enabled in the configuration
+                with torch.amp.autocast(device_type=train_config.device, dtype=torch.bfloat16, enabled=train_config.amp_enable):
+                    # Forward pass and loss computation
+                    output: Tensor = model(
+                        content=batch['content'],
+                        pitch=batch['pitch'],
+                        amplitude=batch['amplitude'],
+                        timbre=batch['timbre'],
 
-            # Backpropagation and optimization step
-            loss.backward()
-            clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
-            optimizer.step()
-            ema_model.update_parameters(model)
+                        content_length=batch['content_length'],
+                        pitch_length=batch['pitch_length'],
+                        amplitude_length=batch['amplitude_length'],
+                        timbre_length=batch['timbre_length'],
 
-            # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-            train_loss += loss.item() * train_config.batch_size
-            train_correct += n_correct
-            train_total += n_total
+                        target=batch['target'],
+                        target_length=batch['target_length']
+                    ) # (N, N_bins, T, D_codec)
+                    loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
+                    n_correct, n_total = calculate_accuracy(output, batch['target'])
 
-            # Set the description of the progress bar to show the current average loss
-            t.set_postfix({
-                "loss": f"{loss.item():.5f}",
-                "acc": f"{n_correct / (n_total + 1e-8) * 100:.3f}%",
-                "avg_loss": f"{train_loss / ((i + 1) * train_config.batch_size + 1e-8):.5f}",
-                "avg_acc": f"{train_correct / (train_total + 1e-8) * 100:.3f}%"
-            })
+                # Backpropagation and optimization step
+                loss.backward()
+                clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
+                optimizer.step()
+                ema_model.update_parameters(model)
 
-        # except Exception as e:
-        #     print(f"An error occurred during training: {e}")
-        #     print("Saving checkpoint before exiting...")
+                # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
+                train_loss += loss.item() * train_config.batch_size
+                train_correct += n_correct
+                train_total += n_total
 
-        #     # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
-        #     timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
-        #     checkpoint_filename = f"checkpoint_epoch_{epoch}_step_{i}_error_{timestamp}.pth"
-        #     checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
-        #     save_checkpoint(
-        #         checkpoint_path,
-        #         model, ema_model, optimizer, scheduler, train_loader, epoch,
-        #         step=i, loss=train_loss / ((i + 1) * train_config.batch_size)
-        #     )
-        #     run.save(checkpoint_path)
-        #     run.finish()
+                # Set the description of the progress bar to show the current average loss
+                t.set_postfix({
+                    "loss": f"{loss.item():.5f}",
+                    "acc": f"{n_correct / (n_total + 1e-8) * 100:.3f}%",
+                    "avg_loss": f"{train_loss / ((i + 1) * train_config.batch_size + 1e-8):.5f}",
+                    "avg_acc": f"{train_correct / (train_total + 1e-8) * 100:.3f}%"
+                })
 
-        #     print(f"Checkpoint saved for epoch {epoch} at step {i}.")
-        #     raise e
+        except Exception as e:
+            print(f"An error occurred during training: {e}")
+            print("Saving checkpoint before exiting...")
+
+            # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
+            timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
+            checkpoint_filename = f"checkpoint_epoch_{epoch}_step_{i}_error_{timestamp}.pth"
+            checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
+            save_checkpoint(
+                checkpoint_path,
+                model, ema_model, optimizer, scheduler, train_loader, epoch,
+                step=i, loss=train_loss / ((i + 1) * train_config.batch_size)
+            )
+            run.save(checkpoint_path)
+            run.finish()
+
+            print(f"Checkpoint saved for epoch {epoch} at step {i}.")
+            raise e
 
         # Calculate and print the average training loss for this epoch
         avg_train_loss = train_loss / (n_train_samples + 1e-8)
@@ -234,12 +236,15 @@ def train_model():
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
                             timbre=batch['timbre'],
+
                             content_length=batch['content_length'],
                             pitch_length=batch['pitch_length'],
                             amplitude_length=batch['amplitude_length'],
                             timbre_length=batch['timbre_length'],
+
+                            target=batch['target'],
                             target_length=batch['target_length']
-                        )
+                        ) # (N, N_bins, T, D_codec)
                         loss: Tensor = loss_fn(output, batch['target'])
                         n_correct, n_total = calculate_accuracy(output, batch['target'])
 
@@ -247,6 +252,14 @@ def train_model():
                     val_loss += loss.item() * validation_config.batch_size
                     val_correct += n_correct
                     val_total += n_total
+
+                    # Set the description of the progress bar to show the current average loss
+                    t.set_postfix({
+                        "loss": f"{loss.item():.5f}",
+                        "acc": f"{n_correct / (n_total + 1e-8) * 100:.3f}%",
+                        "avg_loss": f"{val_loss / ((i + 1) * validation_config.batch_size + 1e-8):.5f}",
+                        "avg_acc": f"{val_correct / (val_total + 1e-8) * 100:.3f}%"
+                    })
 
             # Calculate and print the average validation loss for this epoch
             avg_val_loss = val_loss / (n_val_samples + 1e-8)

@@ -5,9 +5,10 @@ from dataclasses import dataclass
 @dataclass
 class TrainConfig:
     device: str = "cuda" # The device to use for training (e.g., "cuda" for GPU or "cpu" for CPU).
-    amp_enable: bool = True # Whether to use automatic mixed precision (AMP) during training for faster computation and reduced memory usage.
+    amp_enable: bool = False # Whether to use automatic mixed precision (AMP) during training for faster computation and reduced memory usage.
+    n_workers: int = 2 # The number of worker processes to use for data loading during training
 
-    n_epochs: int = 500 # The number of epochs to train the model.
+    n_epochs: int = 100 # The number of epochs to train the model.
     batch_size: int = 16 # The batch size for training and validation.
     lr: float = 2e-4 # The learning rate for the optimizer.
     beta: tuple[float, float] = (0.9, 0.95) # The beta parameters for the AdamW optimizer.
@@ -24,7 +25,8 @@ class TrainConfig:
 @dataclass
 class ValidationConfig:
     device: str = "cuda" # The device to use for validation (e.g., "cuda" for GPU or "cpu" for CPU).
-    amp_enable: bool = True # Whether to use automatic mixed precision (AMP) during validation for faster computation and reduced memory usage.
+    amp_enable: bool = False # Whether to use automatic mixed precision (AMP) during validation for faster computation and reduced memory usage.
+    n_workers: int = 2 # The number of worker processes to use for data loading during validation
 
-    validate_every_n_epochs: int = 10 # The frequency (in epochs) at which to perform validation during training.
+    validate_every_n_epochs: int = 1 # The frequency (in epochs) at which to perform validation during training.
     batch_size: int = 16 # The batch size for validation.
