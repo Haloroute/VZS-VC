@@ -185,92 +185,94 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         print(f"Epoch {epoch}/{train_config.n_epochs}")
         model.train()
         ema_model.train()
-        train_loss, train_correct, train_total = 0.0, 0, 0
+        total_loss, total_corrects, total_samples = 0.0, 0, 0
 
         # Iterate over the training DataLoader with a progress bar
-        try:
-            for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
-                # Move the batch to the specified device (GPU or CPU)
-                batch: TensorDict = batch.to(train_config.device, non_blocking=True)
-                # batch is a TensorDict containing:
-                # "content": content_padded, # (N, T_content, D_content)
-                # "pitch": pitch_padded, # (N, T_pitch)
-                # "amplitude": amplitude_padded, # (N, T_amplitude)
-                # "timbre": acoustic_padded, # (N, T_timbre, D_timbre)
-                # "target": pre_vq_padded, # (N, T, D_codec)
+        # try:
+        for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
+            # Move the batch to the specified device (GPU or CPU)
+            batch: TensorDict = batch.to(train_config.device, non_blocking=True)
+            # batch is a TensorDict containing:
+            # "content": content_padded, # (N, T_content, D_content)
+            # "pitch": pitch_padded, # (N, T_pitch)
+            # "amplitude": amplitude_padded, # (N, T_amplitude)
+            # "timbre": acoustic_padded, # (N, T_timbre, D_timbre)
+            # "target": pre_vq_padded, # (N, T, D_codec)
 
-                # "content_length": content_length, # (N,)
-                # "pitch_length": pitch_length, # (N,)
-                # "amplitude_length": amplitude_length, # (N,)
-                # "timbre_length": acoustic_length # (N,)
-                # "target_length": pre_vq_length, # (N,)
+            # "content_length": content_length, # (N,)
+            # "pitch_length": pitch_length, # (N,)
+            # "amplitude_length": amplitude_length, # (N,)
+            # "timbre_length": acoustic_length # (N,)
+            # "target_length": pre_vq_length, # (N,)
 
-                # Zero the gradients
-                optimizer.zero_grad()
+            # Zero the gradients
+            optimizer.zero_grad()
 
-                # Use autocast for mixed precision training if enabled in the configuration (fp16/bf16) and disable it for fp32
-                with autocast(device_type=train_config.device, dtype=train_config.amp, enabled=train_config.amp != torch.float32):
-                    # Forward pass and loss computation
-                    output: Tensor = model(
-                        content=batch['content'],
-                        pitch=batch['pitch'],
-                        amplitude=batch['amplitude'],
-                        timbre=batch['timbre'],
+            # Use autocast for mixed precision training if enabled in the configuration (fp16/bf16) and disable it for fp32
+            with autocast(device_type=train_config.device, dtype=train_config.amp, enabled=train_config.amp != torch.float32):
+                # Forward pass and loss computation
+                output: Tensor = model(
+                    content=batch['content'],
+                    pitch=batch['pitch'],
+                    amplitude=batch['amplitude'],
+                    timbre=batch['timbre'],
 
-                        content_length=batch['content_length'],
-                        pitch_length=batch['pitch_length'],
-                        amplitude_length=batch['amplitude_length'],
-                        timbre_length=batch['timbre_length'],
+                    content_length=batch['content_length'],
+                    pitch_length=batch['pitch_length'],
+                    amplitude_length=batch['amplitude_length'],
+                    timbre_length=batch['timbre_length'],
 
-                        target_shape=batch['target'].shape,
-                        target_length=batch['target_length']
-                    ) # (N, N_bins, T, D_codec)
-                    loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
-                    n_correct, n_total = calculate_accuracy(output, batch['target'])
+                    target_shape=batch['target'].shape,
+                    target_length=batch['target_length']
+                ) # (N, N_bins, T, D_codec)
+                loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
+                n_corrects, n_samples = calculate_accuracy(output, batch['target'])
 
-                # Backpropagation and optimization step
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
-                scaler.step(optimizer)
-                scaler.update() 
-                ema_model.update_parameters(model)
+            # Backpropagation and optimization step
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
+            scaler.step(optimizer)
+            scaler.update() 
+            ema_model.update_parameters(model)
 
-                # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                train_loss += loss.item() * train_config.batch_size
-                train_correct += n_correct
-                train_total += n_total
+            # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
+            loss = loss.item()
+            total_loss += loss * batch.batch_size.numel()
+            total_corrects += n_corrects
+            total_samples += n_samples
 
-                # Set the description of the progress bar to show the current average loss
-                t.set_postfix({
-                    "loss": f"{loss.item():.5f}",
-                    "acc": f"{n_correct / (n_total + 1e-8) * 100:.3f}%",
-                    "avg_loss": f"{train_loss / ((i + 1) * train_config.batch_size + 1e-8):.5f}",
-                    "avg_acc": f"{train_correct / (train_total + 1e-8) * 100:.3f}%"
-                })
+            # Set the description of the progress bar to show the current average loss
+            t.set_postfix({
+                "loss": f"{loss:.5f}",
+                "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
+            })
 
-        except Exception as e:
-            print(f"An error occurred during training: {e}")
-            print("Saving checkpoint before exiting...")
+        # except Exception as e:
+        #     print(f"An error occurred during training: {e}")
+        #     print("Saving checkpoint before exiting...")
 
-            # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
-            timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
-            checkpoint_filename = f"checkpoint_e_{epoch:03d}_s_{i:05d}_error_{timestamp}.pth"
-            checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
-            save_checkpoint(
-                checkpoint_path,
-                model, ema_model, optimizer, scheduler, scaler, epoch,
-                loss=train_loss / ((i + 1) * train_config.batch_size),
-                accuracy=train_correct / (train_total + 1e-8) * 100
-            )
-            run.save(checkpoint_path)
+        #     # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
+        #     timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
+        #     checkpoint_filename = f"checkpoint_e_{epoch:03d}_s_{i:05d}_error_{timestamp}.pth"
+        #     checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
+        #     save_checkpoint(
+        #         checkpoint_path,
+        #         model, ema_model, optimizer, scheduler, scaler, epoch,
+        #         loss=total_loss / (total_samples + 1e-8),
+        #         accuracy=total_corrects / (total_samples + 1e-8) * 100
+        #     )
+        #     run.save(checkpoint_path)
 
-            print(f"Checkpoint saved for epoch {epoch} at step {i}.")
-            raise e
+        #     print(f"Checkpoint saved for epoch {epoch} at step {i}.")
+        #     raise e
 
         # Calculate and print the average training loss for this epoch
-        avg_train_loss = train_loss / (n_train_samples + 1e-8)
-        avg_train_acc = train_correct / (train_total + 1e-8) * 100
+        avg_train_loss = total_loss / (total_samples + 1e-8)
+        avg_train_acc = total_corrects / (total_samples + 1e-8) * 100
+
         print(f"Average training loss: {avg_train_loss:.5f}")
         print(f"Average training accuracy: {avg_train_acc:.3f}%")
         run.log({"epoch": epoch, "train/loss": avg_train_loss, "train/accuracy": avg_train_acc})
@@ -278,7 +280,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         # Validation phase (optional, can be done every few epochs to save time)
         if epoch % validation_config.validate_every_n_epochs == 0: # Validate every few epochs
             ema_model.eval()
-            val_loss, val_correct, val_total = 0.0, 0, 0
+            total_loss, total_corrects, total_samples = 0.0, 0, 0
 
             # Iterate over the validation DataLoader with a progress bar
             with torch.inference_mode():
@@ -304,24 +306,25 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             target_length=batch['target_length']
                         ) # (N, N_bins, T, D_codec)
                         loss: Tensor = loss_fn(output, batch['target'])
-                        n_correct, n_total = calculate_accuracy(output, batch['target'])
+                        n_corrects, n_samples = calculate_accuracy(output, batch['target'])
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                    val_loss += loss.item() * validation_config.batch_size
-                    val_correct += n_correct
-                    val_total += n_total
+                    total_loss += loss.item() * batch.batch_size.numel()
+                    total_corrects += n_corrects
+                    total_samples += n_samples
 
                     # Set the description of the progress bar to show the current average loss
                     t.set_postfix({
                         "loss": f"{loss.item():.5f}",
-                        "acc": f"{n_correct / (n_total + 1e-8) * 100:.3f}%",
-                        "avg_loss": f"{val_loss / ((i + 1) * validation_config.batch_size + 1e-8):.5f}",
-                        "avg_acc": f"{val_correct / (val_total + 1e-8) * 100:.3f}%"
+                        "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                        "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                        "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
                     })
 
             # Calculate and print the average validation loss for this epoch
-            avg_val_loss = val_loss / (n_val_samples + 1e-8)
-            avg_val_acc = val_correct / (val_total + 1e-8) * 100
+            avg_val_loss = total_loss / (total_samples + 1e-8)
+            avg_val_acc = total_corrects / (total_samples + 1e-8) * 100
+
             print(f"Average validation loss: {avg_val_loss:.5f}")
             print(f"Average validation accuracy: {avg_val_acc:.3f}%")
             run.log({"epoch": epoch, "val/loss": avg_val_loss, "val/accuracy": avg_val_acc})
