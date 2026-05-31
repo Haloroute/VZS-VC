@@ -59,7 +59,7 @@ def continuous_to_discrete_label(z: torch.Tensor, n_bins: int = 4, ignore_value:
 
 
 # Function to map discrete FSQ labels (c) back to quantized continuous values (q)
-def discrete_label_to_continuous(c: torch.Tensor, n_bins: int = 4) -> torch.Tensor:
+def discrete_label_to_continuous(c: torch.Tensor, n_bins: int = 4, ignore_value: float = -100.0) -> torch.Tensor:
     """
     Maps discrete FSQ labels (c) back to quantized continuous values (q).
 
@@ -81,11 +81,18 @@ def discrete_label_to_continuous(c: torch.Tensor, n_bins: int = 4) -> torch.Tens
     o = 0.5 if n_bins % 2 == 0 else 0.0
     s = torch.tensor(o / h)
 
-    # Step 1: Inverse shift operation
+    # Step 1: Create a mask for ignore_value to ensure that ignored indices are not mapped to valid continuous values
+    mask_ignore = (c == int(ignore_value))
+
+    # Step 2: Inverse shift operation
     q = c.float() - n_bins // 2
 
-    # Step 2: Inverse bound back to z
+    # Step 3: Inverse bound back to z
+    q = q.masked_fill(mask_ignore, 0.0) # Temporarily set ignored indices to 0 for the math to work
     z = ((q + o) / h).atanh() - s.atanh()
+
+    # Step 4: Apply the ignore index mask
+    z = z.masked_fill(mask_ignore, ignore_value)
 
     return z
 
