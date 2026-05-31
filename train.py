@@ -71,6 +71,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                 "dataset_config": asdict(dataset_config)
             }
         )
+
     run.define_metric("epoch")
     run.define_metric("train/loss", step_metric="epoch")
     run.define_metric("train/accuracy", step_metric="epoch")
@@ -85,12 +86,14 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     train_dataset, val_dataset = dataset[dataset_config.train_split].with_format("torch"), dataset[dataset_config.val_split].with_format("torch")
     # train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
     # val_dataset = val_dataset.shuffle(seed=dataset_config.seed)
+
     print("Preprocessed dataset loaded and shuffled successfully.")
 
     # Get the number of training and validation samples
     dataset_builder: DatasetBuilder = datasets.load_dataset_builder(dataset_config.path)
     n_train_samples: int = dataset_builder.info.splits[dataset_config.train_split].num_examples
     n_val_samples: int = dataset_builder.info.splits[dataset_config.val_split].num_examples
+
     print(f"Number of training samples: {n_train_samples}")
     print(f"Number of validation samples: {n_val_samples}")
 
@@ -110,16 +113,18 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
+
     print("DataLoaders created successfully.")
 
     # Create the model and load the pretrained modules
     model: VoiceGenerator = load_generator(train_config.device)
-    loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
-    model = torch.compile(model, dynamic=True, fullgraph=True)
-    print("Model and loss function loaded successfully.")
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
+
+    print("Model loaded successfully.")
     print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
 
-    # Setup the optimizer, EMA model, random seed, and other training components
+    # Setup the loss function, optimizer, scaler, random seed, etc. for training
+    loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
     optimizer = AdamW(
         model.parameters(),
         lr=train_config.lr,
@@ -132,7 +137,6 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         total_iters=train_config.n_warmup_epochs
     )
     scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
     torch.manual_seed(train_config.seed)
     np.random.seed(train_config.seed)
     random.seed(train_config.seed)
@@ -161,6 +165,14 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     else:
         start_epoch = 0
         print("No checkpoint provided. Starting training from scratch.")
+
+    # Compile the model with torch.compile for potential speed improvements (optional, can be disabled if it causes issues)
+    if train_config.compiled:
+        model = torch.compile(model, dynamic=True, fullgraph=True)
+        print("Enabled torch.compile for the model.")
+    if validation_config.compiled:
+        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=True)
+        print("Enabled torch.compile for the EMA model.")
 
     # Training loop
     print("Starting training loop...")

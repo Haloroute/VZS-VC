@@ -6,6 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class TrainConfig:
     device: str = "cuda" # The device to use for training (e.g., "cuda" for GPU or "cpu" for CPU).
+    compiled: bool = True # Whether to use torch.compile for potential speed improvements during training (optional, can be disabled if it causes issues).
     amp: torch.dtype = torch.float16 # The automatic mixed precision (AMP) mode to use during training (available options: torch.float16, torch.bfloat16, torch.float32).
     n_workers: int = 2 # The number of worker processes to use for data loading during training
 
@@ -26,6 +27,7 @@ class TrainConfig:
 @dataclass
 class ValidationConfig:
     device: str = "cuda" # The device to use for validation (e.g., "cuda" for GPU or "cpu" for CPU).
+    compiled: bool = False # Whether to use torch.compile for potential speed improvements during validation (optional, can be disabled if it causes issues).
     amp: torch.dtype = torch.float16 # The automatic mixed precision (AMP) mode to use during validation (available options: torch.float16, torch.bfloat16, torch.float32).
     n_workers: int = 2 # The number of worker processes to use for data loading during validation
 

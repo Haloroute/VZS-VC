@@ -45,8 +45,8 @@ def save_checkpoint(
         accuracy (float | None): The current training accuracy. Optional, defaults to None.
     """
     checkpoint = {
-        'model_state_dict': model.state_dict() if model is not None else None,
-        'averaged_model_state_dict': averaged_model.state_dict() if averaged_model is not None else None,
+        'model_state_dict': get_raw_model(model).state_dict() if model is not None else None,
+        'averaged_model_state_dict': get_raw_model(averaged_model).state_dict() if averaged_model is not None else None,
         'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,
         'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
         'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
