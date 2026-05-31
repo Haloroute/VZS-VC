@@ -5,7 +5,74 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
-from .configs import TrainConfig, VieNeuTTSPreprocessedDatasetConfig
+from .configs import VieNeuTTSPreprocessedDatasetConfig
+
+
+# Function to map continuous representations to discrete FSQ labels (c) and vice versa, specifically designed for L=4 levels of FSQ
+def continuous_to_discrete_label(z: torch.Tensor, ignore_value: float = -100.0) -> torch.Tensor:
+    """
+    Maps continuous representations to discrete FSQ labels (c).
+    
+    This function applies a non-linear transformation (tanh) and scaling to bound 
+    the continuous tensor `z`, then quantizes it to the nearest integer, and 
+    shifts the values to non-negative indices (labels). It is specifically 
+    designed for Finite Scalar Quantization (FSQ) with L=4 levels.
+    
+    Args:
+        z (torch.Tensor): Continuous input tensor of arbitrary shape.
+        ignore_value (float): The padding value that should be ignored in the target sequences.
+        
+    Returns:
+        torch.Tensor: A discrete tensor of the same shape as `z`, containing 
+            integer labels in the range [0, 3], except for ignored indices (dtype: torch.long).
+    """
+    # Hyperparameters for FSQ with L=4
+    h = 1.4985
+    o = 0.5
+    s = o / h
+    
+    # Step 1: Create a mask for ignore_value to ensure that padding values are not mapped to valid labels
+    mask_ignore = (z == ignore_value)
+
+    # Step 2: Bound the continuous values
+    z_bound = torch.tanh(z + s) * h - o
+
+    # Step 3: Quantize to nearest integer
+    q = torch.round(z_bound)
+
+    # Step 4: Shift codes to indices
+    c = (q + 2.0).long() # Shift from [-2, 1] to [0, 3]
+
+    # Step 5: Clamp to strictly ensure bounds [0, 3] avoiding any floating-point edge cases
+    c = torch.clamp(c, min=0, max=3)
+
+    # Step 6: Apply the ignore index mask
+    c = c.masked_fill(mask_ignore, int(ignore_value))
+
+    return c
+
+
+# Function to map discrete FSQ labels (c) back to quantized continuous values (q)
+def discrete_label_to_continuous(c: torch.Tensor) -> torch.Tensor:
+    """
+    Maps discrete FSQ labels (c) back to quantized continuous values (q).
+    
+    This function performs the inverse shift operation, converting the integer 
+    labels back to the quantized floating-point checkpoints expected by the 
+    NeuCodec decoder.
+    
+    Args:
+        c (torch.Tensor): Discrete input tensor of arbitrary shape, containing 
+            integer labels (typically in the range [0, 3]).
+            
+    Returns:
+        torch.Tensor: A quantized continuous tensor of the same shape as `c` 
+            (dtype: torch.float32).
+    """
+    # Inverse shift operation
+    q = c.float() - 2.0
+    
+    return q
 
 
 # Function to pad a list of tensors to the same length and then further pad the time dimension to a multiple of 'multiple'
@@ -53,8 +120,9 @@ def collate_fn(batch: list[dict], config: VieNeuTTSPreprocessedDatasetConfig) ->
         # Lưu lại chiều dài thực tế để sinh mask phục vụ tính Loss sau này
         lengths = torch.tensor([t.shape[0] for t in t_list], dtype=torch.long)
         
-        # Đệm lên bội số của 32
-        padded = pad_and_align(t_list, multiple=32, padding_value=padding_value)
+        # # Đệm lên bội số của 32
+        # padded = pad_and_align(t_list, multiple=32, padding_value=padding_value)
+        padded = pad_sequence(t_list, batch_first=True, padding_value=padding_value)
         return padded, lengths
 
     # Trích xuất và đệm toàn bộ các đặc trưng
@@ -62,7 +130,8 @@ def collate_fn(batch: list[dict], config: VieNeuTTSPreprocessedDatasetConfig) ->
     content_padded, content_length = process_feature(config.content_column)
     pitch_padded, pitch_length = process_feature(config.pitch_column)
     acoustic_padded, acoustic_length = process_feature(config.acoustic_column)
-    pre_vq_padded, pre_vq_length = process_feature(config.pre_vq_column)
+    pre_vq_padded, pre_vq_length = process_feature(config.pre_vq_column, padding_value=config.ignore_value)
+    pre_vq_padded = continuous_to_discrete_label(pre_vq_padded, ignore_value=config.ignore_value)
 
     # Đóng gói vào TensorDict
     return TensorDict({
@@ -77,86 +146,3 @@ def collate_fn(batch: list[dict], config: VieNeuTTSPreprocessedDatasetConfig) ->
         'target': pre_vq_padded,
         'target_length': pre_vq_length
     }, batch_size=[N])
-
-
-# Function to inject training data such as sampled r and t timesteps and conditioning dropout into the batch
-def inject_train_data(batch: TensorDict, train_config: TrainConfig) -> TensorDict:
-    """
-    Injects training data into the batch, such as sampling r and t timesteps and applying conditioning dropout.
-
-    Args:
-        batch (TensorDict): The input batch containing the collated data.
-        train_config (TrainConfig): Configuration object containing training settings.
-
-    Returns:
-        TensorDict: The modified batch with injected training data.
-    """
-    N = batch.batch_size
-    device = batch.device
-
-    # 1. Sample epsilon noise for the entire batch
-    epsilon = torch.randn_like(batch['target']) # (N, T, D_codec)
-
-    # 2. Sample r and t timesteps using Logit-Normal distribution parameters from the training configuration
-    # Sample r and t from a normal distribution and then apply the logistic function to get values in the range (0, 1)
-    mean, std = train_config.rt_sampler
-    r_norm = torch.randn(N, device=device) * std + mean # (N,)
-    t_norm = torch.randn(N, device=device) * std + mean # (N,)
-
-    # Apply the logistic function to get values in the range (0, 1)
-    r = torch.sigmoid(r_norm) # (N,)
-    t = torch.sigmoid(t_norm) # (N,)
-
-    # Ensure that r <= t for each sample in the batch by sorting them
-    rt_stacked = torch.stack([r, t], dim=1) # (N, 2)
-    rt_sorted, _ = torch.sort(rt_stacked, dim=1) # (N, 2) sorted along the second dimension
-    r = rt_sorted[:, 0] # Lấy giá trị nhỏ hơn làm start_time
-    t = rt_sorted[:, 1] # Lấy giá trị lớn hơn làm end_time
-
-    # 3. Apply rnt_rate logic to keep r != t for a subset of the batch
-    force_equal_mask = torch.rand(N, device=device) >= train_config.rnt_rate
-    r = torch.where(force_equal_mask, t, r)
-
-    # 4. Apply conditioning dropout for training regularization
-    drop_cond = torch.rand(N, device=device) < train_config.drop_cond_rate # (N,) boolean tensor where True indicates dropping conditioning for that sample
-
-    # 5. Add the sampled timesteps and drop_cond to the batch
-    batch['epsilon'] = epsilon
-    batch['start_time'] = r
-    batch['end_time'] = t
-    batch['drop_cond'] = drop_cond
-
-    return batch
-
-
-# Function to inject validation data into the batch
-def inject_val_data(batch: TensorDict) -> TensorDict:
-    """
-    Injects validation data into the batch, such as constant r and t timesteps for validation and no conditioning dropout.
-
-    Args:
-        batch (TensorDict): The input batch containing the collated data.
-
-    Returns:
-        TensorDict: The modified batch with injected validation data.
-    """
-    N = batch.batch_size
-    device = batch.device
-
-    # 1. Sample epsilon noise for the entire batch
-    epsilon = torch.randn_like(batch['target']) # (N, T, D_codec)
-
-    # 2. For validation, we can use fixed r and t values (e.g., r=0.0 and t=1.0) to evaluate the model's performance at the start and end of the diffusion process without randomness
-    r = torch.zeros(N, device=device) # (N,) start_time = 0.0 for all samples
-    t = torch.ones(N, device=device) # (N,) end_time = 1.0 for all samples
-
-    # 3. Apply no conditioning dropout for validation
-    drop_cond = torch.zeros(N, device=device, dtype=torch.bool) # (N,) boolean tensor where True indicates dropping conditioning for that sample
-
-    # 4. Add the sampled timesteps and drop_cond to the batch
-    batch['epsilon'] = epsilon
-    batch['start_time'] = r
-    batch['end_time'] = t
-    batch['drop_cond'] = drop_cond
-
-    return batch

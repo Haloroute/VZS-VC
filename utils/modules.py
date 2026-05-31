@@ -8,9 +8,8 @@ from .configs import (
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,
-    MeanFlowsGeneratorModuleConfig,
-    MeanFlowsAdaptedLossConfig,
     NeuCodecModuleConfig,
+    VoiceGeneratorModuleConfig,
     Zipformer2ModuleConfig
 )
 from modules import (
@@ -19,9 +18,8 @@ from modules import (
     ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
-    MeanFlowsGenerator,
-    MeanFlowsAdaptedLoss,
     NeuCodec,
+    VoiceGenerator,
     Zipformer2
 )
 
@@ -121,27 +119,14 @@ def load_codec(device: torch.device, config: NeuCodecModuleConfig = None) -> Neu
     return model
 
 
-# Functions to load module for the main VC model (Mean Flows Generator)
-def load_generator(device: torch.device, config: MeanFlowsGeneratorModuleConfig = None) -> MeanFlowsGenerator:
+# Functions to load module for the main VC model (VoiceGenerator)
+def load_generator(device: torch.device, config: VoiceGeneratorModuleConfig = None) -> VoiceGenerator:
     # If no config is provided, use the default one
     if config is None:
-        config = MeanFlowsGeneratorModuleConfig()
+        config = VoiceGeneratorModuleConfig()
 
-    model = MeanFlowsGenerator(**asdict(config))
+    model = VoiceGenerator(**asdict(config))
 
     # Set the model to evaluation mode
     model.to(device).eval()
     return model
-
-
-# Functions to load module for the loss function (Mean Flows Adapted Loss)
-def load_loss_fn(device: torch.device, config: MeanFlowsAdaptedLossConfig = None) -> MeanFlowsAdaptedLoss:
-    # If no config is provided, use the default one
-    if config is None:
-        config = MeanFlowsAdaptedLossConfig()
-
-    loss_fn = MeanFlowsAdaptedLoss(**asdict(config))
-
-    # Set the model to evaluation mode
-    loss_fn.to(device).eval()
-    return loss_fn
