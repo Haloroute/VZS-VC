@@ -131,7 +131,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         start_factor=train_config.start_factor,
         total_iters=train_config.n_warmup_epochs
     )
-    scaler = GradScaler(device=train_config.device, enabled=train_config.amp == "fp16") # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
+    scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
     torch.manual_seed(train_config.seed)
     np.random.seed(train_config.seed)
@@ -197,7 +197,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                 optimizer.zero_grad()
 
                 # Use autocast for mixed precision training if enabled in the configuration (fp16/bf16) and disable it for fp32
-                with autocast(device_type=train_config.device, dtype=torch.float16, enabled=train_config.amp != "fp32"):
+                with autocast(device_type=train_config.device, dtype=train_config.amp, enabled=train_config.amp != torch.float32):
                     # Forward pass and loss computation
                     output: Tensor = model(
                         content=batch['content'],
@@ -210,7 +210,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                         amplitude_length=batch['amplitude_length'],
                         timbre_length=batch['timbre_length'],
 
-                        target=batch['target'],
+                        target_shape=batch['target'].shape,
                         target_length=batch['target_length']
                     ) # (N, N_bins, T, D_codec)
                     loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
@@ -275,7 +275,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                     batch: TensorDict = batch.to(validation_config.device, non_blocking=True)
 
                     # Use autocast for mixed precision validation if enabled in the configuration (fp16/bf16) and disable it for fp32
-                    with autocast(device_type=validation_config.device, dtype=torch.float16, enabled=validation_config.amp != "fp32"):
+                    with autocast(device_type=validation_config.device, dtype=validation_config.amp, enabled=validation_config.amp != torch.float32):
                         # Forward pass and loss computation
                         output: Tensor = ema_model(
                             content=batch['content'],
@@ -288,7 +288,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             amplitude_length=batch['amplitude_length'],
                             timbre_length=batch['timbre_length'],
 
-                            target=batch['target'],
+                            target_shape=batch['target'].shape,
                             target_length=batch['target_length']
                         ) # (N, N_bins, T, D_codec)
                         loss: Tensor = loss_fn(output, batch['target'])

@@ -13,7 +13,6 @@ vector_quantize_pytorch
 pyworld
 tensordict
 torchcodec
-torchdata
 
 # Utility libraries
 datasets[audio]

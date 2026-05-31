@@ -80,17 +80,17 @@ def load_checkpoint(
     Returns:
         tuple: A tuple containing the checkpoint dictionary, epoch number, loss and accuracy.
     """
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
     # Load model state dicts with warnings if keys are missing
     if model is not None and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     else:
         warnings.warn("Model state dict not found in checkpoint. Model weights not loaded.")
     
     # Load averaged model state dict with warning if keys are missing
     if averaged_model is not None and 'averaged_model_state_dict' in checkpoint:
-        averaged_model.load_state_dict(checkpoint['averaged_model_state_dict'])
+        averaged_model.load_state_dict(checkpoint['averaged_model_state_dict'], strict=False)
     else:
         warnings.warn("Averaged model state dict not found in checkpoint. Averaged model weights not loaded.")
 

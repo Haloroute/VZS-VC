@@ -120,7 +120,7 @@ def collate_fn(batch: list[dict], config: VieNeuTTSPreprocessedDatasetConfig) ->
         # Lưu lại chiều dài thực tế để sinh mask phục vụ tính Loss sau này
         lengths = torch.tensor([t.shape[0] for t in t_list], dtype=torch.long)
         
-        # Đệm lên bội số của 32
+        # # Đệm lên bội số của 32
         # padded = pad_and_align(t_list, multiple=32, padding_value=padding_value)
         padded = pad_sequence(t_list, batch_first=True, padding_value=padding_value)
         return padded, lengths

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torch import Tensor
+from torch import Size, Tensor
 from .submodules import LogEmbedding, TransformerBlock
 
 
@@ -56,7 +56,6 @@ class VoiceGenerator(nn.Module):
 
         # Projection layers for input features
         self.cpa_projection = nn.Linear(d_content + d_pitch + d_amplitude, d_model, bias=True)
-        self.d_codec_projection = nn.Linear(d_codec, d_model, bias=True)
 
         # Transformer blocks
         self.transformer_blocks = nn.ModuleList([
@@ -78,7 +77,7 @@ class VoiceGenerator(nn.Module):
         self.amplitude_embedding.init_params()
 
         # Initialize the parameters of projection layers
-        for linear in [self.cpa_projection, self.d_codec_projection]:
+        for linear in [self.cpa_projection]:
             nn.init.trunc_normal_(linear.weight, std=std)
             if linear.bias is not None:
                 nn.init.zeros_(linear.bias)
@@ -95,10 +94,10 @@ class VoiceGenerator(nn.Module):
         self,
         content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor,
         content_length: Tensor, pitch_length: Tensor, amplitude_length: Tensor, timbre_length: Tensor,
-        target: Tensor, target_length: Tensor
+        target_shape: Size, target_length: Tensor
     ) -> Tensor:
         """
-        Forward pass for the MeanFlowsGenerator.
+        Forward pass for the VoiceGenerator.
 
         Args:
             content (Tensor): Content features of shape (N, T_content, D_content).
@@ -111,7 +110,7 @@ class VoiceGenerator(nn.Module):
             amplitude_length (Tensor): Lengths of amplitude sequences for masking, shape (N,).
             timbre_length (Tensor): Lengths of timbre sequences for masking, shape (N,).
 
-            target (Tensor): Target features for teacher forcing during training, shape (N, T, D_codec).
+            target_shape (Size): Shape of the target tensor, shape (N, T, D_codec).
             target_length (Tensor): Lengths of target sequences for interpolation, shape (N,).
 
         Returns:
@@ -131,7 +130,7 @@ class VoiceGenerator(nn.Module):
         # assert (timbre_length is None) or (timbre_length.max().item() <= timbre.size(1)), "Max timbre length cannot exceed timbre feature length."
         # assert (zt_length is None) or (zt_length.max().item() <= zt.size(1)), "Max zt length cannot exceed zt feature length."
 
-        N, T, _ = target.shape # (N, T, D_codec)
+        N, T, _ = target_shape # (N, T, D_codec)
 
         # Step 1: Interpolate content, pitch and amplitude features to the same temporal resolution as zt (if provided) or the maximum length among them.
         # if content_length is None: content_length = torch.full((N,), content.size(1), dtype=torch.long, device=content.device) # (N,)

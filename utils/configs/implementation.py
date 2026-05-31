@@ -1,11 +1,12 @@
 # Configuration class for the training and evaluation process of the VC system
+import torch
 from dataclasses import dataclass
 
 # Configuration for the training process
 @dataclass
 class TrainConfig:
     device: str = "cuda" # The device to use for training (e.g., "cuda" for GPU or "cpu" for CPU).
-    amp: str = "fp16" # The automatic mixed precision (AMP) mode to use during training (available options: "fp16", "bf16", "fp32").
+    amp: torch.dtype = torch.float16 # The automatic mixed precision (AMP) mode to use during training (available options: torch.float16, torch.bfloat16, torch.float32).
     n_workers: int = 2 # The number of worker processes to use for data loading during training
 
     n_epochs: int = 100 # The number of epochs to train the model.
@@ -25,7 +26,7 @@ class TrainConfig:
 @dataclass
 class ValidationConfig:
     device: str = "cuda" # The device to use for validation (e.g., "cuda" for GPU or "cpu" for CPU).
-    amp: str = "fp16" # The automatic mixed precision (AMP) mode to use during validation (available options: "fp16", "bf16", "fp32").
+    amp: torch.dtype = torch.float16 # The automatic mixed precision (AMP) mode to use during validation (available options: torch.float16, torch.bfloat16, torch.float32).
     n_workers: int = 2 # The number of worker processes to use for data loading during validation
 
     validate_every_n_epochs: int = 1 # The frequency (in epochs) at which to perform validation during training.
