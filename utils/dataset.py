@@ -8,43 +8,49 @@ from torch.nn.utils.rnn import pad_sequence
 from .configs import VieNeuTTSPreprocessedDatasetConfig
 
 
+# Function to apply FSQ bounding math
+def apply_fsq_bound(z: torch.Tensor, n_bins: int = 4) -> torch.Tensor:
+    """Helper function to apply FSQ bounding math."""
+    h = (n_bins - 1) * (1 + 1e-3) / 2 # h = 1.5015
+    o = 0.5 if n_bins % 2 == 0 else 0.0
+    s = torch.tensor(o / h)
+    return torch.tanh(z + s.atanh()) * h - o
+
+
 # Function to map continuous representations to discrete FSQ labels (c) and vice versa, specifically designed for L=4 levels of FSQ
-def continuous_to_discrete_label(z: torch.Tensor, ignore_value: float = -100.0) -> torch.Tensor:
+def continuous_to_discrete_label(z: torch.Tensor, n_bins: int = 4, ignore_value: float = -100.0) -> torch.Tensor:
     """
     Maps continuous representations to discrete FSQ labels (c).
-    
+
     This function applies a non-linear transformation (tanh) and scaling to bound 
     the continuous tensor `z`, then quantizes it to the nearest integer, and 
     shifts the values to non-negative indices (labels). It is specifically 
     designed for Finite Scalar Quantization (FSQ) with L=4 levels.
-    
+
     Args:
         z (torch.Tensor): Continuous input tensor of arbitrary shape.
+        n_bins (int): The number of discrete bins for FSQ. For L=4, this should be set to 4.
         ignore_value (float): The padding value that should be ignored in the target sequences.
-        
+
     Returns:
         torch.Tensor: A discrete tensor of the same shape as `z`, containing 
             integer labels in the range [0, 3], except for ignored indices (dtype: torch.long).
     """
-    # Hyperparameters for FSQ with L=4
-    h = 1.4985
-    o = 0.5
-    s = o / h
-    
     # Step 1: Create a mask for ignore_value to ensure that padding values are not mapped to valid labels
     mask_ignore = (z == ignore_value)
 
-    # Step 2: Bound the continuous values
-    z_bound = torch.tanh(z + s) * h - o
+    # Step 2: Apply FSQ bounding for residual = first(self.layers).bound(x)
+    z_bound_1 = apply_fsq_bound(z, n_bins=n_bins)
 
-    # Step 3: Quantize to nearest integer
-    q = torch.round(z_bound)
+    # Step 3: Apply FSQ bounding for round_ste(self.bound(z)) inside FSQ quantizer
+    z_bound_2 = apply_fsq_bound(z_bound_1, n_bins=n_bins)
 
-    # Step 4: Shift codes to indices
-    c = (q + 2.0).long() # Shift from [-2, 1] to [0, 3]
+    # Step 4: Quantize to nearest integer
+    q = torch.round(z_bound_2)
 
-    # Step 5: Clamp to strictly ensure bounds [0, 3] avoiding any floating-point edge cases
-    c = torch.clamp(c, min=0, max=3)
+    # Step 5: Shift to non-negative labels (0, 1, 2, 3)
+    c = (q + n_bins // 2).long()
+    c = torch.clamp(c, min=0, max=n_bins - 1) # Ensure labels are within [0, n_bins-1]
 
     # Step 6: Apply the ignore index mask
     c = c.masked_fill(mask_ignore, int(ignore_value))
@@ -53,26 +59,35 @@ def continuous_to_discrete_label(z: torch.Tensor, ignore_value: float = -100.0) 
 
 
 # Function to map discrete FSQ labels (c) back to quantized continuous values (q)
-def discrete_label_to_continuous(c: torch.Tensor) -> torch.Tensor:
+def discrete_label_to_continuous(c: torch.Tensor, n_bins: int = 4) -> torch.Tensor:
     """
     Maps discrete FSQ labels (c) back to quantized continuous values (q).
-    
+
     This function performs the inverse shift operation, converting the integer 
     labels back to the quantized floating-point checkpoints expected by the 
     NeuCodec decoder.
-    
+
     Args:
         c (torch.Tensor): Discrete input tensor of arbitrary shape, containing 
             integer labels (typically in the range [0, 3]).
-            
+        n_bins (int): The number of discrete bins for FSQ. For L=4, this should be set to 4.
+
     Returns:
         torch.Tensor: A quantized continuous tensor of the same shape as `c` 
             (dtype: torch.float32).
     """
-    # Inverse shift operation
-    q = c.float() - 2.0
-    
-    return q
+    # Hyperparameters for FSQ with L=4
+    h = (n_bins - 1) * (1 + 1e-3) / 2 # h = 1.5015
+    o = 0.5 if n_bins % 2 == 0 else 0.0
+    s = torch.tensor(o / h)
+
+    # Step 1: Inverse shift operation
+    q = c.float() - n_bins // 2
+
+    # Step 2: Inverse bound back to z
+    z = ((q + o) / h).atanh() - s.atanh()
+
+    return z
 
 
 # Function to pad a list of tensors to the same length and then further pad the time dimension to a multiple of 'multiple'
