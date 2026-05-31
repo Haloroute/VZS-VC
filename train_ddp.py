@@ -2,6 +2,7 @@
 import datasets, datetime, math, os, random, torch, wandb
 
 import numpy as np
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.distributed as dist
 
@@ -35,16 +36,26 @@ from utils.modules import load_generator
 
 
 # Train the model from scratch using the preprocessed dataset
-def train_model(checkpoint_path: str | None = None, previous_run_id: str | None = None):
+def train_model(local_rank: int, world_size: int, checkpoint_path: str | None = None, previous_run_id: str | None = None):
+    # Set the environment variables for distributed training
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355' # Pick any free port
+
     # Initialize the distributed training environment
-    dist.init_process_group(backend='nccl')
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=local_rank
+    )
 
     # Set the current device based on the local rank provided by torch.distributed.launch
-    local_rank = int(os.environ['LOCAL_RANK'])
-    global_rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
+    # local_rank = int(os.environ['LOCAL_RANK'])
+    # global_rank = int(os.environ['RANK'])
+    # world_size = int(os.environ['WORLD_SIZE'])
+    global_rank = local_rank
     torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
+    device = f"cuda:{local_rank}"
     if global_rank == 0:
         print(f"Initialized distributed training on global rank {global_rank} with local rank {local_rank} using device {device}.")
 
@@ -104,13 +115,14 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         dataset_config.path,
         streaming=True
     )
-    local_dataset = split_dataset_by_node(dataset, num_nodes=world_size, node_rank=global_rank)
     train_dataset, val_dataset = (
-        local_dataset[dataset_config.train_split].with_format("torch"),
-        local_dataset[dataset_config.val_split].with_format("torch")
+        dataset[dataset_config.train_split].with_format("torch"),
+        dataset[dataset_config.val_split].with_format("torch")
     )
     # train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
     # val_dataset = val_dataset.shuffle(seed=dataset_config.seed)
+    train_dataset = split_dataset_by_node(train_dataset, local_rank, world_size)
+    val_dataset = split_dataset_by_node(val_dataset, local_rank, world_size)
 
     if global_rank == 0: print("Preprocessed dataset loaded and shuffled successfully.")
 
@@ -123,25 +135,21 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         print(f"Number of training samples: {n_train_samples}")
         print(f"Number of validation samples: {n_val_samples}")
 
-    # Create distributed samplers for the training and validation datasets
-    train_sampler = DistributedSampler(train_dataset, shuffle=True, seed=dataset_config.seed)
-    val_sampler = DistributedSampler(val_dataset, shuffle=False)
-
     # Create DataLoaders for training and validation
     collate_fn_wrapper = partial(collate_fn, config=dataset_config)
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
-        sampler=train_sampler,
         num_workers=train_config.n_workers,
+        prefetch_factor=4 if train_config.n_workers > 0 else None,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=validation_config.batch_size,
-        sampler=val_sampler,
         num_workers=validation_config.n_workers,
+        prefetch_factor=4 if validation_config.n_workers > 0 else None,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
@@ -150,7 +158,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
     # Create the model and load the pretrained modules
     model: VoiceGenerator = load_generator(train_config.device)
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
+    ema_model = AveragedModel(model, device=train_config.device, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
 
     if global_rank == 0:
         print("Model loaded successfully.")
@@ -200,15 +208,15 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         if global_rank == 0: print("No checkpoint provided. Starting training from scratch.")
 
     # Wrap the model with DistributedDataParallel (DDP) for distributed training
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-    ema_model = DDP(ema_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    # ema_model = DDP(ema_model, device_ids=[local_rank], output_device=local_rank)
 
     # Compile the model with torch.compile for potential speed improvements (optional, can be disabled if it causes issues)
     if train_config.compiled:
-        model = torch.compile(model, dynamic=True, fullgraph=True)
+        model = torch.compile(model, dynamic=True, fullgraph=False)
         if global_rank == 0: print("Enabled torch.compile for the model.")
     if validation_config.compiled:
-        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=True)
+        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=False)
         if global_rank == 0: print("Enabled torch.compile for the EMA model.")
 
     # Training loop
@@ -219,10 +227,6 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
     # Iterate over epochs
     for epoch in range(start_epoch + 1, train_config.n_epochs + 1):
-        # Set the epoch for the distributed sampler to ensure proper shuffling across epochs
-        train_sampler.set_epoch(epoch)
-        val_sampler.set_epoch(epoch)
-
         # Training phase
         if global_rank == 0: print(f"Epoch {epoch}/{train_config.n_epochs}")
         model.train()
@@ -230,8 +234,8 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
         # Iterate over the training DataLoader with a progress bar
         # try:
-        for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), \
-                                    leave=False, disable=global_rank != 0)):
+        for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", leave=False, disable=global_rank != 0, \
+                                    total=math.ceil(n_train_samples / train_config.batch_size / world_size))):
             # Move the batch to the specified device (GPU or CPU)
             batch: TensorDict = batch.to(train_config.device, non_blocking=True)
             # batch is a TensorDict containing:
@@ -273,59 +277,29 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             # Backpropagation and optimization step
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
+            clip_grad_norm_(model.parameters(), max_norm=train_config.clip_grad_norm) # Gradient clipping to prevent exploding gradients
             scaler.step(optimizer)
             scaler.update() 
             ema_model.update_parameters(model)
 
             # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
             loss = loss.item()
-            total_loss += loss * batch.batch_size.numel()
+            total_loss += loss * n_samples
             total_corrects += n_corrects
             total_samples += n_samples
 
-            # Log training metrics to the progress bar and WandB (only on the master process).
-            metric_tensor = torch.tensor([loss, n_corrects, n_samples, total_loss, total_corrects, total_samples], device=train_config.device)
-            dist.all_reduce(metric_tensor, op=dist.ReduceOp.SUM)
-
             if global_rank == 0:
-                dist_loss = metric_tensor[0].item() / world_size
-                dist_n_corrects = metric_tensor[1].item()
-                dist_n_samples = metric_tensor[2].item()
-                dist_total_loss = metric_tensor[3].item()
-                dist_total_corrects = metric_tensor[4].item()
-                dist_total_samples = metric_tensor[5].item()
-
                 # Set the description of the progress bar to show the current average loss
                 t.set_postfix({
-                    "loss": f"{(dist_loss):.5f}",
-                    "acc": f"{dist_n_corrects / (dist_n_samples + 1e-8) * 100:.3f}%",
-                    "avg_loss": f"{dist_total_loss / (dist_total_samples + 1e-8):.5f}",
-                    "avg_acc": f"{dist_total_corrects / (dist_total_samples + 1e-8) * 100:.3f}%"
+                    "loss": f"{(loss):.5f}",
+                    "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                    "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                    "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
                 })
-
-        # except Exception as e:
-        #     # Handle any exceptions that occur during training, print the error message, and save a checkpoint before exiting (only on the master process).
-        #     if global_rank == 0:
-        #         print(f"An error occurred during training: {e}")
-        #         print("Saving checkpoint before exiting...")
-
-        #         timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
-        #         checkpoint_filename = f"checkpoint_e_{epoch:03d}_s_{i:05d}_error_{timestamp}.pth"
-        #         checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
-        #         save_checkpoint(
-        #             checkpoint_path,
-        #             model, ema_model, optimizer, scheduler, scaler, epoch
-        #         )
-        #         run.save(checkpoint_path)
-
-        #         print(f"Checkpoint saved for epoch {epoch} at step {i}.")
-
-        #     raise e
 
         # Calculate and print the average training loss for this epoch
         metric_tensor = torch.tensor([total_loss, total_corrects, total_samples], device=train_config.device)
-        dist.all_reduce(metric_tensor, op=dist.ReduceOp.SUM)
+        dist.reduce(metric_tensor, dst=0, op=dist.ReduceOp.SUM)
 
         if global_rank == 0:
             dist_total_loss = metric_tensor[0].item()
@@ -345,7 +319,8 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             # Iterate over the validation DataLoader with a progress bar
             with torch.inference_mode():
-                for i, batch in (t := tqdm(enumerate(val_loader), desc="Validation", total=math.ceil(n_val_samples / validation_config.batch_size), leave=False)):
+                for i, batch in (t := tqdm(enumerate(val_loader), desc="Validation", leave=False, disable=global_rank != 0, \
+                                            total=math.ceil(n_val_samples / validation_config.batch_size / world_size))):
                     # Move the batch to the specified device (GPU or CPU)
                     batch: TensorDict = batch.to(validation_config.device, non_blocking=True)
 
@@ -371,44 +346,33 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
                     loss = loss.item()
-                    total_loss += loss * batch.batch_size.numel()
+                    total_loss += loss * n_samples
                     total_corrects += n_corrects
                     total_samples += n_samples
 
-                    # Log training metrics to the progress bar and WandB (only on the master process).
-                    metric_tensor = torch.tensor([loss, n_corrects, n_samples, total_loss, total_corrects, total_samples], device=validation_config.device)
-                    dist.all_reduce(metric_tensor, op=dist.ReduceOp.SUM)
-
                     if global_rank == 0:
-                        dist_loss = metric_tensor[0].item() / world_size
-                        dist_n_corrects = metric_tensor[1].item()
-                        dist_n_samples = metric_tensor[2].item()
-                        dist_total_loss = metric_tensor[3].item()
-                        dist_total_corrects = metric_tensor[4].item()
-                        dist_total_samples = metric_tensor[5].item()
-
                         # Set the description of the progress bar to show the current average loss
                         t.set_postfix({
-                            "loss": f"{(dist_loss):.5f}",
-                            "acc": f"{dist_n_corrects / (dist_n_samples + 1e-8) * 100:.3f}%",
-                            "avg_loss": f"{dist_total_loss / (dist_total_samples + 1e-8):.5f}",
-                            "avg_acc": f"{dist_total_corrects / (dist_total_samples + 1e-8) * 100:.3f}%"
+                            "loss": f"{(loss):.5f}",
+                            "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                            "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                            "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
                         })
 
             # Calculate and print the average validation loss for this epoch
             metric_tensor = torch.tensor([total_loss, total_corrects, total_samples], device=validation_config.device)
-            dist.all_reduce(metric_tensor, op=dist.ReduceOp.SUM)
+            dist.reduce(metric_tensor, dst=0, op=dist.ReduceOp.SUM)
 
             if global_rank == 0:
                 dist_total_loss = metric_tensor[0].item()
                 dist_total_corrects = metric_tensor[1].item()
                 dist_total_samples = metric_tensor[2].item()
-                avg_train_loss = dist_total_loss / (dist_total_samples + 1e-8)
-                avg_train_acc = dist_total_corrects / (dist_total_samples + 1e-8) * 100
+                avg_val_loss = dist_total_loss / (dist_total_samples + 1e-8)
+                avg_val_acc = dist_total_corrects / (dist_total_samples + 1e-8) * 100
 
-                print(f"Average training loss: {avg_train_loss:.5f}")
-                print(f"Average training accuracy: {avg_train_acc:.3f}%")
-                run.log({"epoch": epoch, "train/loss": avg_train_loss, "train/accuracy": avg_train_acc})
+                print(f"Average validation loss: {avg_val_loss:.5f}")
+                print(f"Average validation accuracy: {avg_val_acc:.3f}%")
+                run.log({"epoch": epoch, "val/loss": avg_val_loss, "val/accuracy": avg_val_acc})
 
         # Saving phase (save a checkpoint every few epochs)
         if global_rank == 0 and epoch % train_config.save_every_n_epochs == 0:
@@ -419,8 +383,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             save_checkpoint(
                 checkpoint_path,
                 model, ema_model, optimizer, scheduler, scaler, epoch,
-                loss=avg_train_loss,
-                accuracy=avg_train_acc
+                loss=avg_train_loss, accuracy=avg_train_acc
             )
             run.save(checkpoint_path)
             print(f"Checkpoint saved for epoch {epoch}.")
@@ -435,7 +398,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
 
 # Function to continue training from a checkpoint
-def continue_training():
+def continue_training(world_size):
     print("This function will load a checkpoint and continue training from where it left off.")
 
     # Prompt the user to enter the path to the checkpoint file
@@ -449,11 +412,23 @@ def continue_training():
     if previous_run_id.strip() == "":
         previous_run_id = None
 
-    train_model(checkpoint_path=checkpoint_path, previous_run_id=previous_run_id)
+    # Spawning the training processes for DDP with the specified checkpoint path and previous run ID
+    print(f"Spawning {world_size} processes for DDP...")
+    mp.spawn(
+        train_worker, 
+        args=(world_size, checkpoint_path, previous_run_id), 
+        nprocs=world_size, 
+        join=True
+    )
 
 
 # Main function to run the training script
 def main():
+    # Automatically detect how many GPUs you have on this machine
+    world_size = torch.cuda.device_count()
+    if world_size < 2:
+        print("Warning: Only 1 GPU detected. DDP will run, but isn't strictly necessary.")
+
     print("This is the main training script. You can run specific training functions from here if needed.")
     print("Choose an action:")
     print("1. Train a model from scratch")
@@ -461,10 +436,18 @@ def main():
     choice = input("Enter the number of your choice: ")
     if choice == "1":
         print("You chose to train a model from scratch.")
-        train_model()
+
+        # Spawning the training processes for DDP with the specified checkpoint path and previous run ID
+        print(f"Spawning {world_size} processes for DDP...")
+        mp.spawn(
+            train_model, 
+            args=(world_size, None, None), 
+            nprocs=world_size, 
+            join=True
+        )
     elif choice == "2":
         print("You chose to continue training an existing model.")
-        continue_training()
+        continue_training(world_size)
     else:
         print("Invalid choice. Please run the script again and choose a valid option.")
 

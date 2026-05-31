@@ -231,7 +231,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             # Backpropagation and optimization step
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
+            clip_grad_norm_(model.parameters(), max_norm=train_config.clip_grad_norm) # Gradient clipping to prevent exploding gradients
             scaler.step(optimizer)
             scaler.update() 
             ema_model.update_parameters(model)
