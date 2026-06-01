@@ -6,6 +6,7 @@ from .dataset import (
     VieNeuTTSPreprocessedDatasetConfig
 )
 from .implementation import (
+    InferenceConfig,
     TrainConfig,
     ValidationConfig
 )
