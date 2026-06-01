@@ -2,19 +2,24 @@
 import datasets, datetime, math, os, random, torch, wandb
 
 import numpy as np
+import torch.multiprocessing as mp
 import torch.nn as nn
+import torch.distributed as dist
 
 from dataclasses import asdict
 from datasets import DatasetBuilder
+from datasets.distributed import split_dataset_by_node
 from functools import partial
 from tensordict import TensorDict
 from torch import Tensor
 from torch.amp import GradScaler, autocast
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm
 
 from modules import VoiceGenerator
@@ -31,71 +36,104 @@ from utils.modules import load_generator
 
 
 # Train the model from scratch using the preprocessed dataset
-def train_model(checkpoint_path: str | None = None, previous_run_id: str | None = None):
+def train_model(local_rank: int, world_size: int, checkpoint_path: str | None = None, previous_run_id: str | None = None):
+    # Set the environment variables for distributed training
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355' # Pick any free port
+
+    # Initialize the distributed training environment
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=local_rank
+    )
+
+    # Set the current device based on the local rank provided by torch.distributed.launch
+    # local_rank = int(os.environ['LOCAL_RANK'])
+    # global_rank = int(os.environ['RANK'])
+    # world_size = int(os.environ['WORLD_SIZE'])
+    global_rank = local_rank
+    torch.cuda.set_device(local_rank)
+    device = f"cuda:{local_rank}"
+    if global_rank == 0:
+        print(f"Initialized distributed training on global rank {global_rank} with local rank {local_rank} using device {device}.")
+
     # Load the configurations
     dataset_config = VieNeuTTSPreprocessedDatasetConfig()
     model_config = VoiceGeneratorModuleConfig()
     train_config = TrainConfig()
     validation_config = ValidationConfig()
 
-    # Setup WandB run to track this script.
-    if previous_run_id is not None:
-        print(f"Continuing from previous wandb run ID: {previous_run_id}")
-        run = wandb.init(
-            # Set the wandb entity where your project will be logged (generally your team name).
-            entity="topaz-and-numpy",
-            # Set the wandb project where this run will be logged.
-            project="VZS-VC",
-            # Set the wandb run ID to continue logging to the same run.
-            id=previous_run_id,
-            # Track hyperparameters and run metadata.
-            config={
-                "model_config": asdict(model_config),
-                "train_config": asdict(train_config),
-                "validation_config": asdict(validation_config),
-                "dataset_config": asdict(dataset_config)
-            },
-            resume="must"
-        )
-    else:
-        run = wandb.init(
-            # Set the wandb entity where your project will be logged (generally your team name).
-            entity="topaz-and-numpy",
-            # Set the wandb project where this run will be logged.
-            project="VZS-VC",
-            # Track hyperparameters and run metadata.
-            config={
-                "model_config": asdict(model_config),
-                "train_config": asdict(train_config),
-                "validation_config": asdict(validation_config),
-                "dataset_config": asdict(dataset_config)
-            }
-        )
+    train_config.device = device
+    validation_config.device = device
 
-    run.define_metric("epoch")
-    run.define_metric("train/loss", step_metric="epoch")
-    run.define_metric("train/accuracy", step_metric="epoch")
-    run.define_metric("val/loss", step_metric="epoch")
-    run.define_metric("val/accuracy", step_metric="epoch")
+    # Setup WandB run to track this script (only on the master process).
+    if global_rank == 0:
+        print("Setting up WandB logging for the master process (global rank 0).")
+        if previous_run_id is not None:
+            print(f"Continuing from previous wandb run ID: {previous_run_id}")
+            run = wandb.init(
+                # Set the wandb entity where your project will be logged (generally your team name).
+                entity="topaz-and-numpy",
+                # Set the wandb project where this run will be logged.
+                project="VZS-VC",
+                # Set the wandb run ID to continue logging to the same run.
+                id=previous_run_id,
+                # Track hyperparameters and run metadata.
+                config={
+                    "model_config": asdict(model_config),
+                    "train_config": asdict(train_config),
+                    "validation_config": asdict(validation_config),
+                    "dataset_config": asdict(dataset_config)
+                },
+                resume="must"
+            )
+        else:
+            run = wandb.init(
+                # Set the wandb entity where your project will be logged (generally your team name).
+                entity="topaz-and-numpy",
+                # Set the wandb project where this run will be logged.
+                project="VZS-VC",
+                # Track hyperparameters and run metadata.
+                config={
+                    "model_config": asdict(model_config),
+                    "train_config": asdict(train_config),
+                    "validation_config": asdict(validation_config),
+                    "dataset_config": asdict(dataset_config)
+                }
+            )
+
+        run.define_metric("epoch")
+        run.define_metric("train/loss", step_metric="epoch")
+        run.define_metric("train/accuracy", step_metric="epoch")
+        run.define_metric("val/loss", step_metric="epoch")
+        run.define_metric("val/accuracy", step_metric="epoch")
 
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
         dataset_config.path,
         streaming=True
     )
-    train_dataset, val_dataset = dataset[dataset_config.train_split].with_format("torch"), dataset[dataset_config.val_split].with_format("torch")
+    train_dataset, val_dataset = (
+        dataset[dataset_config.train_split].with_format("torch"),
+        dataset[dataset_config.val_split].with_format("torch")
+    )
     # train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
     # val_dataset = val_dataset.shuffle(seed=dataset_config.seed)
+    train_dataset = split_dataset_by_node(train_dataset, local_rank, world_size)
+    val_dataset = split_dataset_by_node(val_dataset, local_rank, world_size)
 
-    print("Preprocessed dataset loaded and shuffled successfully.")
+    if global_rank == 0: print("Preprocessed dataset loaded and shuffled successfully.")
 
     # Get the number of training and validation samples
     dataset_builder: DatasetBuilder = datasets.load_dataset_builder(dataset_config.path)
     n_train_samples: int = dataset_builder.info.splits[dataset_config.train_split].num_examples
     n_val_samples: int = dataset_builder.info.splits[dataset_config.val_split].num_examples
 
-    print(f"Number of training samples: {n_train_samples}")
-    print(f"Number of validation samples: {n_val_samples}")
+    if global_rank == 0:
+        print(f"Number of training samples: {n_train_samples}")
+        print(f"Number of validation samples: {n_val_samples}")
 
     # Create DataLoaders for training and validation
     collate_fn_wrapper = partial(collate_fn, config=dataset_config)
@@ -103,6 +141,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         train_dataset,
         batch_size=train_config.batch_size,
         num_workers=train_config.n_workers,
+        prefetch_factor=4 if train_config.n_workers > 0 else None,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
@@ -110,18 +149,20 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         val_dataset,
         batch_size=validation_config.batch_size,
         num_workers=validation_config.n_workers,
+        prefetch_factor=4 if validation_config.n_workers > 0 else None,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
     )
 
-    print("DataLoaders created successfully.")
+    if global_rank == 0: print("DataLoaders created successfully.")
 
     # Create the model and load the pretrained modules
     model: VoiceGenerator = load_generator(train_config.device)
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
+    ema_model = AveragedModel(model, device=train_config.device, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
 
-    print("Model loaded successfully.")
-    print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
+    if global_rank == 0:
+        print("Model loaded successfully.")
+        print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
 
     # Setup the loss function, optimizer, scaler, random seed, etc. for training
     loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
@@ -141,16 +182,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     np.random.seed(train_config.seed)
     random.seed(train_config.seed)
 
-    print("Optimizer and EMA model set up successfully.")
+    if global_rank == 0: print("Optimizer and EMA model set up successfully.")
 
     # Load checkpoint if a path is provided
     if checkpoint_path is not None:
-        print(f"Loading checkpoint from {checkpoint_path}...")
+        if global_rank == 0: print(f"Loading checkpoint from {checkpoint_path}...")
         _, start_epoch, start_loss, start_accuracy = load_checkpoint(
             checkpoint_path,
             model, ema_model, optimizer, scheduler, scaler
         )
-        print(f"Checkpoint loaded successfully. Resuming from epoch {start_epoch}, loss {start_loss}, accuracy {start_accuracy}%.")
+        if global_rank == 0: print(f"Checkpoint loaded successfully. Resuming from epoch {start_epoch}, loss {start_loss}, accuracy {start_accuracy}%.")
 
         # Update the learning rate of the optimizer
         for param_group in optimizer.param_groups:
@@ -164,32 +205,37 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
     else:
         start_epoch = 0
-        print("No checkpoint provided. Starting training from scratch.")
+        if global_rank == 0: print("No checkpoint provided. Starting training from scratch.")
+
+    # Wrap the model with DistributedDataParallel (DDP) for distributed training
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    # ema_model = DDP(ema_model, device_ids=[local_rank], output_device=local_rank)
 
     # Compile the model with torch.compile for potential speed improvements (optional, can be disabled if it causes issues)
     if train_config.compiled:
-        model = torch.compile(model, dynamic=True, fullgraph=True)
-        print("Enabled torch.compile for the model.")
+        model = torch.compile(model, dynamic=True, fullgraph=False)
+        if global_rank == 0: print("Enabled torch.compile for the model.")
     if validation_config.compiled:
-        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=True)
-        print("Enabled torch.compile for the EMA model.")
+        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=False)
+        if global_rank == 0: print("Enabled torch.compile for the EMA model.")
 
     # Training loop
-    print("Starting training loop...")
-    print(f"Model configuration: {asdict(model_config)}")
-    print(f"Training configuration: {asdict(train_config)}")
+    if global_rank == 0:
+        print("Starting training loop...")
+        print(f"Model configuration: {asdict(model_config)}")
+        print(f"Training configuration: {asdict(train_config)}")
 
     # Iterate over epochs
     for epoch in range(start_epoch + 1, train_config.n_epochs + 1):
         # Training phase
-        print(f"Epoch {epoch}/{train_config.n_epochs}")
+        if global_rank == 0: print(f"Epoch {epoch}/{train_config.n_epochs}")
         model.train()
-        ema_model.train()
         total_loss, total_corrects, total_samples = 0.0, 0, 0
 
         # Iterate over the training DataLoader with a progress bar
         # try:
-        for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
+        for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", leave=False, disable=global_rank != 0, \
+                                    total=math.ceil(n_train_samples / train_config.batch_size / world_size))):
             # Move the batch to the specified device (GPU or CPU)
             batch: TensorDict = batch.to(train_config.device, non_blocking=True)
             # batch is a TensorDict containing:
@@ -238,44 +284,33 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
             loss = loss.item()
-            total_loss += loss * batch.batch_size.numel()
+            total_loss += loss * n_samples
             total_corrects += n_corrects
             total_samples += n_samples
 
-            # Set the description of the progress bar to show the current average loss
-            t.set_postfix({
-                "loss": f"{loss:.5f}",
-                "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
-                "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
-                "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
-            })
-
-        # except Exception as e:
-        #     print(f"An error occurred during training: {e}")
-        #     print("Saving checkpoint before exiting...")
-
-        #     # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
-        #     timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
-        #     checkpoint_filename = f"checkpoint_e_{epoch:03d}_s_{i:05d}_error_{timestamp}.pth"
-        #     checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
-        #     save_checkpoint(
-        #         checkpoint_path,
-        #         model, ema_model, optimizer, scheduler, scaler, epoch,
-        #         loss=total_loss / (total_samples + 1e-8),
-        #         accuracy=total_corrects / (total_samples + 1e-8) * 100
-        #     )
-        #     run.save(checkpoint_path)
-
-        #     print(f"Checkpoint saved for epoch {epoch} at step {i}.")
-        #     raise e
+            if global_rank == 0:
+                # Set the description of the progress bar to show the current average loss
+                t.set_postfix({
+                    "loss": f"{(loss):.5f}",
+                    "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                    "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                    "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
+                })
 
         # Calculate and print the average training loss for this epoch
-        avg_train_loss = total_loss / (total_samples + 1e-8)
-        avg_train_acc = total_corrects / (total_samples + 1e-8) * 100
+        metric_tensor = torch.tensor([total_loss, total_corrects, total_samples], device=train_config.device)
+        dist.reduce(metric_tensor, dst=0, op=dist.ReduceOp.SUM)
 
-        print(f"Average training loss: {avg_train_loss:.5f}")
-        print(f"Average training accuracy: {avg_train_acc:.3f}%")
-        run.log({"epoch": epoch, "train/loss": avg_train_loss, "train/accuracy": avg_train_acc})
+        if global_rank == 0:
+            dist_total_loss = metric_tensor[0].item()
+            dist_total_corrects = metric_tensor[1].item()
+            dist_total_samples = metric_tensor[2].item()
+            avg_train_loss = dist_total_loss / (dist_total_samples + 1e-8)
+            avg_train_acc = dist_total_corrects / (dist_total_samples + 1e-8) * 100
+
+            print(f"Average training loss: {avg_train_loss:.5f}")
+            print(f"Average training accuracy: {avg_train_acc:.3f}%")
+            run.log({"epoch": epoch, "train/loss": avg_train_loss, "train/accuracy": avg_train_acc})
 
         # Validation phase (optional, can be done every few epochs to save time)
         if epoch % validation_config.validate_every_n_epochs == 0: # Validate every few epochs
@@ -284,7 +319,8 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             # Iterate over the validation DataLoader with a progress bar
             with torch.inference_mode():
-                for i, batch in (t := tqdm(enumerate(val_loader), desc="Validation", total=math.ceil(n_val_samples / validation_config.batch_size), leave=False)):
+                for i, batch in (t := tqdm(enumerate(val_loader), desc="Validation", leave=False, disable=global_rank != 0, \
+                                            total=math.ceil(n_val_samples / validation_config.batch_size / world_size))):
                     # Move the batch to the specified device (GPU or CPU)
                     batch: TensorDict = batch.to(validation_config.device, non_blocking=True)
 
@@ -309,28 +345,37 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                         n_corrects, n_samples = calculate_accuracy(output, batch['target'])
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                    total_loss += loss.item() * batch.batch_size.numel()
+                    loss = loss.item()
+                    total_loss += loss * n_samples
                     total_corrects += n_corrects
                     total_samples += n_samples
 
-                    # Set the description of the progress bar to show the current average loss
-                    t.set_postfix({
-                        "loss": f"{loss.item():.5f}",
-                        "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
-                        "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
-                        "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
-                    })
+                    if global_rank == 0:
+                        # Set the description of the progress bar to show the current average loss
+                        t.set_postfix({
+                            "loss": f"{(loss):.5f}",
+                            "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                            "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                            "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
+                        })
 
             # Calculate and print the average validation loss for this epoch
-            avg_val_loss = total_loss / (total_samples + 1e-8)
-            avg_val_acc = total_corrects / (total_samples + 1e-8) * 100
+            metric_tensor = torch.tensor([total_loss, total_corrects, total_samples], device=validation_config.device)
+            dist.reduce(metric_tensor, dst=0, op=dist.ReduceOp.SUM)
 
-            print(f"Average validation loss: {avg_val_loss:.5f}")
-            print(f"Average validation accuracy: {avg_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/loss": avg_val_loss, "val/accuracy": avg_val_acc})
+            if global_rank == 0:
+                dist_total_loss = metric_tensor[0].item()
+                dist_total_corrects = metric_tensor[1].item()
+                dist_total_samples = metric_tensor[2].item()
+                avg_val_loss = dist_total_loss / (dist_total_samples + 1e-8)
+                avg_val_acc = dist_total_corrects / (dist_total_samples + 1e-8) * 100
+
+                print(f"Average validation loss: {avg_val_loss:.5f}")
+                print(f"Average validation accuracy: {avg_val_acc:.3f}%")
+                run.log({"epoch": epoch, "val/loss": avg_val_loss, "val/accuracy": avg_val_acc})
 
         # Saving phase (save a checkpoint every few epochs)
-        if epoch % train_config.save_every_n_epochs == 0:
+        if global_rank == 0 and epoch % train_config.save_every_n_epochs == 0:
             # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
             timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
             checkpoint_filename = f"checkpoint_e_{epoch:03d}_{timestamp}.pth"
@@ -338,8 +383,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             save_checkpoint(
                 checkpoint_path,
                 model, ema_model, optimizer, scheduler, scaler, epoch,
-                loss=avg_train_loss,
-                accuracy=avg_train_acc
+                loss=avg_train_loss, accuracy=avg_train_acc
             )
             run.save(checkpoint_path)
             print(f"Checkpoint saved for epoch {epoch}.")
@@ -348,11 +392,13 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         scheduler.step()
 
     # Finish the wandb run after training is complete
-    run.finish()
+    dist.destroy_process_group()
+    if global_rank == 0:
+        run.finish()
 
 
 # Function to continue training from a checkpoint
-def continue_training():
+def continue_training(world_size):
     print("This function will load a checkpoint and continue training from where it left off.")
 
     # Prompt the user to enter the path to the checkpoint file
@@ -366,11 +412,23 @@ def continue_training():
     if previous_run_id.strip() == "":
         previous_run_id = None
 
-    train_model(checkpoint_path=checkpoint_path, previous_run_id=previous_run_id)
+    # Spawning the training processes for DDP with the specified checkpoint path and previous run ID
+    print(f"Spawning {world_size} processes for DDP...")
+    mp.spawn(
+        train_worker, 
+        args=(world_size, checkpoint_path, previous_run_id), 
+        nprocs=world_size, 
+        join=True
+    )
 
 
 # Main function to run the training script
 def main():
+    # Automatically detect how many GPUs you have on this machine
+    world_size = torch.cuda.device_count()
+    if world_size < 2:
+        print("Warning: Only 1 GPU detected. DDP will run, but isn't strictly necessary.")
+
     print("This is the main training script. You can run specific training functions from here if needed.")
     print("Choose an action:")
     print("1. Train a model from scratch")
@@ -378,10 +436,18 @@ def main():
     choice = input("Enter the number of your choice: ")
     if choice == "1":
         print("You chose to train a model from scratch.")
-        train_model()
+
+        # Spawning the training processes for DDP with the specified checkpoint path and previous run ID
+        print(f"Spawning {world_size} processes for DDP...")
+        mp.spawn(
+            train_model, 
+            args=(world_size, None, None), 
+            nprocs=world_size, 
+            join=True
+        )
     elif choice == "2":
         print("You chose to continue training an existing model.")
-        continue_training()
+        continue_training(world_size)
     else:
         print("Invalid choice. Please run the script again and choose a valid option.")
 
