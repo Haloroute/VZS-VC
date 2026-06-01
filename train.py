@@ -188,7 +188,6 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         total_loss, total_corrects, total_samples = 0.0, 0, 0
 
         # Iterate over the training DataLoader with a progress bar
-        # try:
         for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
             # Move the batch to the specified device (GPU or CPU)
             batch: TensorDict = batch.to(train_config.device, non_blocking=True)
@@ -250,25 +249,6 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                 "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
             })
 
-        # except Exception as e:
-        #     print(f"An error occurred during training: {e}")
-        #     print("Saving checkpoint before exiting...")
-
-        #     # Get the current time and format it as YYMMDD-HHMMSS for the checkpoint filename
-        #     timestamp = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
-        #     checkpoint_filename = f"checkpoint_e_{epoch:03d}_s_{i:05d}_error_{timestamp}.pth"
-        #     checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
-        #     save_checkpoint(
-        #         checkpoint_path,
-        #         model, ema_model, optimizer, scheduler, scaler, epoch,
-        #         loss=total_loss / (total_samples + 1e-8),
-        #         accuracy=total_corrects / (total_samples + 1e-8) * 100
-        #     )
-        #     run.save(checkpoint_path)
-
-        #     print(f"Checkpoint saved for epoch {epoch} at step {i}.")
-        #     raise e
-
         # Calculate and print the average training loss for this epoch
         avg_train_loss = total_loss / (total_samples + 1e-8)
         avg_train_acc = total_corrects / (total_samples + 1e-8) * 100
@@ -279,6 +259,59 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
         # Validation phase (optional, can be done every few epochs to save time)
         if epoch % validation_config.validate_every_n_epochs == 0: # Validate every few epochs
+            # Validation on the original model
+            model.eval()
+            total_loss, total_corrects, total_samples = 0.0, 0, 0
+
+            # Iterate over the validation DataLoader with a progress bar
+            with torch.inference_mode():
+                for i, batch in (t := tqdm(enumerate(val_loader), desc="Validation", total=math.ceil(n_val_samples / validation_config.batch_size), leave=False)):
+                    # Move the batch to the specified device (GPU or CPU)
+                    batch: TensorDict = batch.to(validation_config.device, non_blocking=True)
+
+                    # Use autocast for mixed precision validation if enabled in the configuration (fp16/bf16) and disable it for fp32
+                    with autocast(device_type=validation_config.device, dtype=validation_config.amp, enabled=validation_config.amp != torch.float32):
+                        # Forward pass and loss computation
+                        output: Tensor = model(
+                            content=batch['content'],
+                            pitch=batch['pitch'],
+                            amplitude=batch['amplitude'],
+                            timbre=batch['timbre'],
+
+                            content_length=batch['content_length'],
+                            pitch_length=batch['pitch_length'],
+                            amplitude_length=batch['amplitude_length'],
+                            timbre_length=batch['timbre_length'],
+
+                            target_shape=batch['target'].shape,
+                            target_length=batch['target_length']
+                        ) # (N, N_bins, T, D_codec)
+                        loss: Tensor = loss_fn(output, batch['target'])
+                        n_corrects, n_samples = calculate_accuracy(output, batch['target'])
+
+                    # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
+                    loss = loss.item()
+                    total_loss += loss * n_samples
+                    total_corrects += n_corrects
+                    total_samples += n_samples
+
+                    # Set the description of the progress bar to show the current average loss
+                    t.set_postfix({
+                        "loss": f"{loss:.5f}",
+                        "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
+                        "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
+                        "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
+                    })
+
+            # Calculate and print the average validation loss for this epoch
+            avg_val_loss = total_loss / (total_samples + 1e-8)
+            avg_val_acc = total_corrects / (total_samples + 1e-8) * 100
+
+            print(f"Average validation loss: {avg_val_loss:.5f}")
+            print(f"Average validation accuracy: {avg_val_acc:.3f}%")
+            run.log({"epoch": epoch, "val/orig/loss": avg_val_loss, "val/orig/accuracy": avg_val_acc})
+
+            # Validation on EMA model
             ema_model.eval()
             total_loss, total_corrects, total_samples = 0.0, 0, 0
 
@@ -309,25 +342,26 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                         n_corrects, n_samples = calculate_accuracy(output, batch['target'])
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                    total_loss += loss.item() * n_samples
+                    loss = loss.item()
+                    total_loss += loss * n_samples
                     total_corrects += n_corrects
                     total_samples += n_samples
 
                     # Set the description of the progress bar to show the current average loss
                     t.set_postfix({
-                        "loss": f"{loss.item():.5f}",
+                        "loss": f"{loss:.5f}",
                         "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
                         "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
                         "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
                     })
 
             # Calculate and print the average validation loss for this epoch
-            avg_val_loss = total_loss / (total_samples + 1e-8)
-            avg_val_acc = total_corrects / (total_samples + 1e-8) * 100
+            avg_ema_val_loss = total_loss / (total_samples + 1e-8)
+            avg_ema_val_acc = total_corrects / (total_samples + 1e-8) * 100
 
-            print(f"Average validation loss: {avg_val_loss:.5f}")
-            print(f"Average validation accuracy: {avg_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/loss": avg_val_loss, "val/accuracy": avg_val_acc})
+            print(f"Average EMA validation loss: {avg_ema_val_loss:.5f}")
+            print(f"Average EMA validation accuracy: {avg_ema_val_acc:.3f}%")
+            run.log({"epoch": epoch, "val/ema/loss": avg_ema_val_loss, "val/ema/accuracy": avg_ema_val_acc})
 
         # Saving phase (save a checkpoint every few epochs)
         if epoch % train_config.save_every_n_epochs == 0:

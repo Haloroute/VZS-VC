@@ -13,10 +13,10 @@ from modules import VoiceGenerator
 # Function to unwrap torch.compile for clean checkpoint saving
 def get_raw_model(m: nn.Module) -> nn.Module:
     """Unwraps torch.compile for clean checkpoint saving."""
-    if hasattr(m, "_orig_mod"):
-        m = m._orig_mod
     if hasattr(m, "module"):
         m = m.module
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
     return m
 
 
