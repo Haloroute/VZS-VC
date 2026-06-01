@@ -216,7 +216,7 @@ def train_model(local_rank: int, world_size: int, checkpoint_path: str | None = 
         model = torch.compile(model, dynamic=True, fullgraph=False)
         if global_rank == 0: print("Enabled torch.compile for the model.")
     if validation_config.compiled:
-        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=False)
+        ema_model.module = torch.compile(ema_model.module, dynamic=True, fullgraph=False)
         if global_rank == 0: print("Enabled torch.compile for the EMA model.")
 
     # Training loop

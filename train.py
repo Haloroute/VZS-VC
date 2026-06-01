@@ -81,7 +81,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
         dataset_config.path,
-        streaming=True
+        streaming=False
     )
     train_dataset, val_dataset = dataset[dataset_config.train_split].with_format("torch"), dataset[dataset_config.val_split].with_format("torch")
     # train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
@@ -171,7 +171,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         model = torch.compile(model, dynamic=True, fullgraph=True)
         print("Enabled torch.compile for the model.")
     if validation_config.compiled:
-        ema_model = torch.compile(ema_model, dynamic=True, fullgraph=True)
+        ema_model.module = torch.compile(ema_model.module, dynamic=True, fullgraph=True)
         print("Enabled torch.compile for the EMA model.")
 
     # Training loop
@@ -238,7 +238,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
             loss = loss.item()
-            total_loss += loss * batch.batch_size.numel()
+            total_loss += loss * n_samples
             total_corrects += n_corrects
             total_samples += n_samples
 
@@ -309,7 +309,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                         n_corrects, n_samples = calculate_accuracy(output, batch['target'])
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                    total_loss += loss.item() * batch.batch_size.numel()
+                    total_loss += loss.item() * n_samples
                     total_corrects += n_corrects
                     total_samples += n_samples
 
