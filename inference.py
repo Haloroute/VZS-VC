@@ -92,7 +92,7 @@ def inference_offline():
         amplitude_length = torch.tensor([amplitude_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the amplitude embedding sequence
         timbre_length = torch.tensor([timbre_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the timbre embedding sequence
 
-        target_length = torch.tensor([max([content_embedding.shape[1], pitch_embedding.shape[1], amplitude_embedding.shape[1]]) - 1], device=inference_config.device)
+        target_length = torch.tensor([max([content_embedding.shape[1], pitch_embedding.shape[1], amplitude_embedding.shape[1]])], device=inference_config.device)
         # (1,) tensor containing the maximum length among the content, pitch, amplitude embedding sequences
         target_shape = torch.Size([1, torch.max(target_length).item(), model_config.d_codec]) # The shape of the target tensor for the model input, which is (N, T, D_codec). Here N=1 for inference.
 

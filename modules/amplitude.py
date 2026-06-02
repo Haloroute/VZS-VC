@@ -22,8 +22,9 @@ class LocalRMSAmplitude(nn.Module):
         self.hop_size = hop_size
 
         # Tính toán padding để đảm bảo độ dài T không đổi
-        self.pad_left = window_size // 2
-        self.pad_right = window_size - self.pad_left
+        total_padding = window_size - hop_size
+        self.pad_left = total_padding // 2
+        self.pad_right = total_padding - self.pad_left
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -33,7 +34,7 @@ class LocalRMSAmplitude(nn.Module):
             x (torch.Tensor): Tensor âm thanh đầu vào có kích thước (B, 1, T).
             
         Returns:
-            torch.Tensor: Tensor chứa đường viền cường độ cục bộ, kích thước (B, T // hop_size + 1).
+            torch.Tensor: Tensor chứa đường viền cường độ cục bộ, kích thước (B, T // hop_size).
         """
         # 1. Bình phương tín hiệu
         x_sq = x ** 2

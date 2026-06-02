@@ -47,7 +47,7 @@ class FCPE(nn.Module):
             torch.Tensor: Extracted F0 sequence, shape (B, T_out) where T_out is the interpolated target length.
         """
         audio_length = audio.shape[1]
-        f0_target_length = (audio_length // self.hop_size) + 1
+        f0_target_length = audio_length // self.hop_size
         peak = torch.max(torch.abs(audio)) # Get the maximum absolute value in the audio tensor
         if peak > 1:
             audio = audio / (peak + 1e-8) # Normalize the audio to be in the range [-1, 1]
