@@ -186,7 +186,7 @@ class NeuCodec(
         Returns:
             tuple: A tuple containing:
                 - pre_vq_emb (torch.Tensor): [B, F, 8], 50Hz FSQ embedding before codes.
-                - acoustic_emb (torch.Tensor): [B, D, F], 50Hz acoustic embedding.
+                - acoustic_emb (torch.Tensor): [B, F, D], 50Hz acoustic embedding.
         """
         with torch.inference_mode():
             # prepare inputs

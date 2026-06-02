@@ -11,6 +11,7 @@ from .implementation import (
     ValidationConfig
 )
 from .module import (
+    DistillNeuCodecModuleConfig,
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,

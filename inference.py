@@ -62,18 +62,19 @@ def inference_offline():
     if source_sr != inference_config.input_sampling_rate:
         source_waveform = F_audio.resample(source_waveform, orig_freq=source_sr, new_freq=inference_config.input_sampling_rate)
     source_waveform = source_waveform.unsqueeze(0).to(inference_config.device) # (1, T_source) -> (1, 1, T_source)
-    print(f"Loaded source audio from {source_audio_path} with sampling rate {source_sr} and waveform shape {source_waveform.shape}.")
+    print(f"Loaded source audio from {source_audio_path} with waveform shape {source_waveform.shape}.")
 
     target_waveform, target_sr = torchaudio.load(target_audio_path) # (1, T_target)
     if target_sr != inference_config.input_sampling_rate:
         target_waveform = F_audio.resample(target_waveform, orig_freq=target_sr, new_freq=inference_config.input_sampling_rate)
     target_waveform = target_waveform.unsqueeze(0).to(inference_config.device) # (1, T_target) -> (1, 1, T_target)
-    print(f"Loaded target audio from {target_audio_path} with sampling rate {target_sr} and waveform shape {target_waveform.shape}.")
+    print(f"Loaded target audio from {target_audio_path} with waveform shape {target_waveform.shape}.")
 
     # Begin the inference process
     with torch.inference_mode(), autocast(device_type=inference_config.device, dtype=inference_config.amp, enabled=inference_config.amp != torch.float32):
         # Extract the content, pitch, amplitude from the source audio and the timbre from the target audio using the respective pretrained modules
-        timbre_embedding = codec.inference(target_waveform.to(inference_config.device)) # (1, T_timbre, D_timbre)
+        _, timbre_embedding = codec.encode_pre_vq(target_waveform.to(inference_config.device)) # (1, T_timbre, D_timbre)
+        timbre_embedding = timbre_embedding.to(inference_config.device)
         print(f"Extracted timbre embedding from target audio with shape {timbre_embedding.shape}.")
 
         content_embedding = content_encoder.inference(source_waveform.to(inference_config.device)) # (1, T_content, D_content)
@@ -91,9 +92,9 @@ def inference_offline():
         amplitude_length = torch.tensor([amplitude_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the amplitude embedding sequence
         timbre_length = torch.tensor([timbre_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the timbre embedding sequence
 
-        target_length = torch.max(torch.stack([content_embedding, pitch_embedding, amplitude_embedding, timbre_embedding]), dim=0).values - 1
+        target_length = torch.tensor([max([content_embedding.shape[1], pitch_embedding.shape[1], amplitude_embedding.shape[1]]) - 1], device=inference_config.device)
         # (1,) tensor containing the maximum length among the content, pitch, amplitude embedding sequences
-        target_shape = torch.Tensor.shape(1, torch.max(target_length).item(), model_config.d_codec) # The shape of the target tensor for the model input, which is (N, T, D_codec). Here N=1 for inference.
+        target_shape = torch.Size([1, torch.max(target_length).item(), model_config.d_codec]) # The shape of the target tensor for the model input, which is (N, T, D_codec). Here N=1 for inference.
 
         # Perform inference with the loaded model to get the output codec embedding for the converted audio
         output: Tensor = model.forward(
@@ -111,26 +112,26 @@ def inference_offline():
             target_length=target_length
         ) # (1, N_bins, T, D_codec)
 
-    # Post-process the output codec embedding to get the converted audio waveform and save it to a file
-    # Perform argmax over the N_bins dimension to get the quantized codec embedding
-    quantized_codec_embedding = torch.argmax(output, dim=1) # (1, T, D_codec)
+        # Post-process the output codec embedding to get the converted audio waveform and save it to a file
+        # Perform argmax over the N_bins dimension to get the quantized codec embedding
+        quantized_codec_embedding = torch.argmax(output, dim=1) # (1, T, D_codec)
 
-    # Convert the quantized codec embedding to the original audio waveform
-    codec_weights = torch.pow(model_config.n_bins, torch.arange(model_config.d_codec)) # (D_codec,)
-    codec_weights = codec_weights.to(dtype=torch.long, device=inference_config.device)
-    # (D_codec,) tensor containing the weights for each dimension of the codec embedding based on the number of bins
+        # Convert the quantized codec embedding to the original audio waveform
+        codec_weights = torch.pow(model_config.n_bins, torch.arange(model_config.d_codec)) # (D_codec,)
+        codec_weights = codec_weights.to(dtype=torch.long, device=inference_config.device)
+        # (D_codec,) tensor containing the weights for each dimension of the codec embedding based on the number of bins
 
-    # Multiply the quantized codec embedding with the weights and sum over the D_codec dimension to get the quantized indices for each time step
-    quantized_indices = torch.sum(quantized_codec_embedding * codec_weights, dim=-1).unsqueeze(1) # (1, 1, T) tensor containing the quantized indices for each time step
+        # Multiply the quantized codec embedding with the weights and sum over the D_codec dimension to get the quantized indices for each time step
+        quantized_indices = torch.sum(quantized_codec_embedding * codec_weights, dim=-1).unsqueeze(1) # (1, 1, T) tensor containing the quantized indices for each time step
 
-    # Decode the quantized indices to get the converted audio waveform
-    converted_waveform = codec.decode_code(quantized_indices) # (1, 1, T_converted) tensor containing the converted audio waveform
-    print(f"Converted audio waveform shape: {converted_waveform.shape}")
+        # Decode the quantized indices to get the converted audio waveform
+        converted_waveform = codec.decode_code(quantized_indices.to('cpu')) # (1, 1, T_converted) tensor containing the converted audio waveform
+        print(f"Converted audio waveform shape: {converted_waveform.shape}")
 
-    # Export the converted audio waveform to a file
-    output_audio_path = input("Enter the path to save the converted audio file (e.g., output.wav): ")
-    torchaudio.save(output_audio_path, converted_waveform.squeeze(0).cpu(), sample_rate=inference_config.output_sampling_rate)
-    print(f"Converted audio saved to {output_audio_path} with sampling rate {inference_config.output_sampling_rate}.")
+        # Export the converted audio waveform to a file
+        output_audio_path = input("Enter the path to save the converted audio file (e.g., output.wav): ")
+        torchaudio.save(output_audio_path, converted_waveform.detach().squeeze(0).cpu(), sample_rate=inference_config.output_sampling_rate)
+        print(f"Converted audio saved to {output_audio_path} with sampling rate {inference_config.output_sampling_rate}.")
 
 
 # Main function to run the inference script
