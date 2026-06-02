@@ -5,6 +5,7 @@ from dataclasses import asdict
 from safetensors.torch import load_model
 
 from .configs import (
+    DistillNeuCodecModuleConfig,
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,
@@ -14,6 +15,7 @@ from .configs import (
 )
 from modules import (
     Conv2dSubsampling,
+    DistillNeuCodec,
     EncoderModel,
     ERes2NetV2,
     FCPE,
@@ -113,6 +115,19 @@ def load_codec(device: torch.device, config: NeuCodecModuleConfig = None) -> Neu
         config = NeuCodecModuleConfig()
 
     model = NeuCodec.from_pretrained(**asdict(config))
+
+    # Set the model to evaluation mode
+    model.to(device).eval()
+    return model
+
+
+# Functions to load module for distill neural codec (DistillNeuCodec)
+def load_distill_codec(device: torch.device, config: DistillNeuCodecModuleConfig = None) -> DistillNeuCodec:
+    # If no config is provided, use the default one
+    if config is None:
+        config = DistillNeuCodecModuleConfig()
+
+    model = DistillNeuCodec.from_pretrained(**asdict(config))
 
     # Set the model to evaluation mode
     model.to(device).eval()

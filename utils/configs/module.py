@@ -37,6 +37,11 @@ class LocalRMSModuleConfig:
 class NeuCodecModuleConfig:
     pretrained_model_name_or_path: str = 'neuphonic/neucodec'
 
+# Configuration for the DistillNeuCodec model used as the distilled codec module (a smaller version of NeuCodec for faster inference)
+@dataclass
+class DistillNeuCodecModuleConfig:
+    pretrained_model_name_or_path: str = 'neuphonic/distill-neucodec'
+
 # Configuration for the Voice Generator model used as the main VC model
 @dataclass
 class VoiceGeneratorModuleConfig:

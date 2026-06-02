@@ -34,3 +34,12 @@ class ValidationConfig:
 
     validate_every_n_epochs: int = 1 # The frequency (in epochs) at which to perform validation during training.
     batch_size: int = 96 # The batch size for validation.
+
+# Configuration for the inference process
+@dataclass
+class InferenceConfig:
+    device: str = "cuda" # The device to use for inference (e.g., "cuda" for GPU or "cpu" for CPU).
+    compiled: bool = False # Whether to use torch.compile for potential speed improvements during inference (optional, can be disabled if it causes issues).
+    amp: torch.dtype = torch.float32 # The automatic mixed precision (AMP) mode to use during inference (available options: torch.float16, torch.bfloat16, torch.float32).
+    input_sampling_rate: int = 16000 # The sampling rate for source and target audio during inference.
+    output_sampling_rate: int = 24000 # The sampling rate for the output audio during inference.
