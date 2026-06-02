@@ -46,16 +46,16 @@ class DistillNeuCodecModuleConfig:
 @dataclass
 class VoiceGeneratorModuleConfig:
     d_content: int = 512 # The dimensionality of the content embedding (came from VietASR content features). Should be 512.
-    d_pitch: int = 64 # The dimensionality of the pitch embedding (after logarithmic embedding).
-    d_amplitude: int = 64 # The dimensionality of the amplitude embedding (after logarithmic embedding).
-    d_timbre: int = 1024 # The dimensionality of the timbre embedding (came from NeuCodec acoustic features). Should be 1024.
-    d_codec: int = 8 # The dimensionality of the codec embedding (used for Finite Scalar Quantization). Should be 8.
-    n_bins: int = 4 # The number of bins for each dimension (used for Finite Scalar Quantization). Should be 4.
+    d_pitch: int = 32 # The dimensionality of the pitch embedding (after logarithmic embedding).
+    d_amplitude: int = 32 # The dimensionality of the amplitude embedding (after logarithmic embedding).
+    d_timbre: int = 192 # The dimensionality of the timbre embedding (came from ERes2NetV2). Should be 192.
+    d_embedding: int = 1024 # The dimensionality of each token embedding. Should be 1024.
+    n_tokens: int = 65538 # The number of input and output tokens (derived from NeuCodec codebook). Should be 2^16 + 2.
 
-    n_pitch: int = 192 # The number of bins for pitch embedding.
+    n_pitch: int = 256 # The number of bins for pitch embedding.
     min_pitch: float = 32.7 # The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).
     max_pitch: float = 1244.5 # The maximum value for pitch embedding (should be a positive value). Should be around 1244.5 (D#5 note).
-    n_amplitude: int = 192 # The number of bins for amplitude embedding.
+    n_amplitude: int = 256 # The number of bins for amplitude embedding.
     min_amplitude: float = 0.01 # The minimum value for amplitude embedding (should be a positive value). Should be around 0.01.
     max_amplitude: float = 0.85 # The maximum value for amplitude embedding (should be a positive value). Should be around 0.85.
 
