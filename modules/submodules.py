@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torch import Tensor
+from typing import Self
 
 
 # Logarithmic embedding for pitch and amplitude values.
@@ -223,6 +224,7 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         self.d_model = d_model
         self.n_heads = n_heads
         self.dropout = dropout
+        self._dropout = dropout
 
         # Multi-head attention layer
         self.q_project = nn.Linear(d_model, d_model, bias=False)
@@ -243,6 +245,20 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         nn.init.trunc_normal_(self.k_project.weight, std=std)
         nn.init.trunc_normal_(self.v_project.weight, std=std)
         nn.init.trunc_normal_(self.out_project.weight, std=std)
+
+    def train(self, mode: bool = True) -> Self:
+        """
+        Override the default train() method to ensure that the RoPE module is also set to training mode when the parent module is set to training mode.
+        
+        Args:
+            mode (bool): If True, sets the module in training mode. If False, sets it in evaluation mode.
+        
+        Returns:
+            Self: The module itself after setting the training mode.
+        """
+        super().train(mode)
+        self._dropout = self.dropout if mode else 0.0
+        return self
 
     def forward(self, x: Tensor, key_padding_mask: Tensor) -> Tensor:
         """
@@ -284,7 +300,7 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
             key=rope_k,
             value=v,
             attn_mask=attn_mask,
-            dropout_p=self.dropout,
+            dropout_p=self._dropout,
             is_causal=False
         ) # (N, n_heads, T, d_head)
 
