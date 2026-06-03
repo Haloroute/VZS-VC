@@ -64,3 +64,5 @@ class VoiceGeneratorModuleConfig:
     d_ff: int = 1536 # The dimensionality of the feed-forward layer in each DiT block.
     n_layers: int = 8 # The number of DiT blocks in the generator.
     dropout: float = 0.2 # The dropout rate for regularization.
+
+    embedding_weight: str = 'checkpoints/codebooks.pt' # The path to the pretrained embedding weights (derived from NeuCodec codebook).

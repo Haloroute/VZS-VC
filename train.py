@@ -168,10 +168,10 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
     # Compile the model with torch.compile for potential speed improvements (optional, can be disabled if it causes issues)
     if train_config.compiled:
-        model = torch.compile(model, dynamic=True, fullgraph=False)
+        model = torch.compile(model, dynamic=True, fullgraph=True)
         print("Enabled torch.compile for the model.")
     if validation_config.compiled:
-        ema_model.module = torch.compile(ema_model.module, dynamic=True, fullgraph=False)
+        ema_model.module = torch.compile(ema_model.module, dynamic=True, fullgraph=True)
         print("Enabled torch.compile for the EMA model.")
 
     # Training loop

@@ -15,7 +15,7 @@ class VoiceGenerator(nn.Module):
         self,
         d_content: int, d_pitch: int, d_amplitude: int, d_timbre: int, d_embedding: int, n_tokens: int,
         n_pitch: int, min_pitch: float, max_pitch: float, n_amplitude: int, min_amplitude: float, max_amplitude: float,
-        d_model: int, n_heads: int, d_ff: int, n_layers: int, dropout: float = 0.1, embedding_weight: Tensor | None = None
+        d_model: int, n_heads: int, d_ff: int, n_layers: int, dropout: float = 0.1, embedding_weight: str | Tensor | None = None
     ):
         """
         Initialize the VoiceGenerator module.
@@ -41,7 +41,7 @@ class VoiceGenerator(nn.Module):
             n_layers (int): The number of DiT blocks in the generator.
             dropout (float): The dropout rate for regularization. Default is 0.1.
 
-            embedding_weight (Tensor | None): Optional pre-trained weights for the token embedding layer. Should have shape (<= n_tokens, d_embedding) if provided.
+            embedding_weight (str | Tensor | None): Optional pre-trained weights for the token embedding layer. Should have shape (<= n_tokens, d_embedding) if provided.
         """
         super().__init__()
         # Initialize model parameters
@@ -80,7 +80,7 @@ class VoiceGenerator(nn.Module):
 
         self.init_params(embedding_weight=embedding_weight)
 
-    def init_params(self, std: float = 0.02, embedding_weight: Tensor | None = None):
+    def init_params(self, std: float = 0.02, embedding_weight: str | Tensor | None = None):
         """
         Initialize the parameters of the model using various initialization schemes.
         """
@@ -89,6 +89,8 @@ class VoiceGenerator(nn.Module):
         self.amplitude_embedding.init_params()
         nn.init.trunc_normal_(self.token_embedding.weight, std=std / self.scale_factor)
         if embedding_weight is not None:
+            if isinstance(embedding_weight, str):
+                embedding_weight = torch.load(embedding_weight)
             V, d_embedding = embedding_weight.shape
             assert V <= self.n_tokens, f"Vocabulary size of embedding weight ({V}) is larger than n_tokens ({self.n_tokens})"
             assert d_embedding == self.d_embedding, f"Embedding dimension mismatch ({d_embedding} != {self.d_embedding})"
