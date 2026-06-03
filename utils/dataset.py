@@ -44,7 +44,7 @@ def collate_fn(batch: list[dict], config: VieNeuTTSPreprocessedDatasetConfig) ->
     target_length = torch.tensor([t.shape[0] for t in target_in_list], dtype=torch.long)
 
     # Đệm list target_in và target_out
-    target_in_padded = pad_sequence(target_in_list, batch_first=True, padding_value=config.ignore_value)
+    target_in_padded = pad_sequence(target_in_list, batch_first=True)
     target_out_padded = pad_sequence(target_out_list, batch_first=True, padding_value=config.ignore_value)
 
     # Đóng gói vào TensorDict
