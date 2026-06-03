@@ -165,7 +165,7 @@ def extract_embeddings():
             content_embedding: Tensor = f_content.result() # (1, T', D_content)
             pitch_embedding: Tensor = f_pitch.result() # (1, T)
             timbre_embedding: Tensor = f_timbre.result() # (1, D_timbre)
-            pre_vq_embedding: Tensor = f_codec.result() # (1, T)
+            code_embedding: Tensor = f_codec.result() # (1, T)
             torch.cuda.synchronize() # Ensure all streams have finished processing
 
             # Validate that the extracted embeddings do not contain NaN values before yielding the sample
@@ -177,8 +177,8 @@ def extract_embeddings():
                 raise ValueError(f"Pitch embedding contains NaN values for sample at index {idx}.")
             if timbre_embedding.isnan().any():
                 raise ValueError(f"Timbre embedding contains NaN values for sample at index {idx}.")
-            if pre_vq_embedding.isnan().any():
-                raise ValueError(f"Pre-VQ embedding contains NaN values for sample at index {idx}.")
+            if code_embedding.isnan().any():
+                raise ValueError(f"Code embedding contains NaN values for sample at index {idx}.")
 
             # Build the new yielded dictionary, excluding un-serializable audio columns
             new_sample = {
@@ -191,7 +191,7 @@ def extract_embeddings():
             new_sample[preprocessed_dataset_config.content_column] = content_embedding.squeeze(0).numpy(force=True)
             new_sample[preprocessed_dataset_config.pitch_column] = pitch_embedding.squeeze(0).numpy(force=True)
             new_sample[preprocessed_dataset_config.timbre_column] = timbre_embedding.squeeze(0).numpy(force=True)
-            new_sample[preprocessed_dataset_config.pre_vq_column] = pre_vq_embedding.squeeze(0).numpy(force=True)
+            new_sample[preprocessed_dataset_config.code_column] = code_embedding.squeeze(0).numpy(force=True)
 
             return new_sample
         except Exception as e:
@@ -205,7 +205,7 @@ def extract_embeddings():
         preprocessed_dataset_config.content_column: Array2D(shape=(None, 512), dtype="float32"), # New feature for content embedding
         preprocessed_dataset_config.pitch_column: Sequence(Value("float32")), # New feature for pitch embedding
         preprocessed_dataset_config.timbre_column: Sequence(Value("float32"), length=192), # New feature for timbre embedding
-        preprocessed_dataset_config.pre_vq_column: Sequence(Value("int64")), # New feature for pre-VQ embedding
+        preprocessed_dataset_config.code_column: Sequence(Value("int64")), # New feature for code embedding
     })
 
     # Create a new dataset with the extracted embeddings and the same features as the perturbed dataset, plus new features for the embeddings.

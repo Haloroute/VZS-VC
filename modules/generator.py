@@ -190,5 +190,6 @@ class VoiceGenerator(nn.Module):
         output: Tensor = self.norm(target_emb) # (N, T + 1, D_model)
         output: Tensor = self.output_projection(output) # (N, T + 1, D_model) -> (N, T + 1, D_embedding)
         output: Tensor = self.final_projection(output) * self.scale_factor # (N, T + 1, D_embedding) -> (N, T + 1, N_tokens)
+        output = output.transpose(1, 2) # (N, T + 1, N_tokens) -> (N, N_tokens, T + 1) for CrossEntropyLoss
 
-        return output # (N, T + 1, N_tokens)
+        return output # (N, N_tokens, T + 1)

@@ -50,7 +50,7 @@ class VoiceGeneratorModuleConfig:
     d_amplitude: int = 32 # The dimensionality of the amplitude embedding (after logarithmic embedding).
     d_timbre: int = 192 # The dimensionality of the timbre embedding (came from ERes2NetV2). Should be 192.
     d_embedding: int = 1024 # The dimensionality of each token embedding. Should be 1024.
-    n_tokens: int = 65538 # The number of input and output tokens (derived from NeuCodec codebook). Should be 2^16 + 2.
+    n_tokens: int = 2 ** 16 + 2 # The number of input and output tokens (derived from NeuCodec codebook). Should be 2^16 + 2.
 
     n_pitch: int = 256 # The number of bins for pitch embedding.
     min_pitch: float = 32.7 # The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).
