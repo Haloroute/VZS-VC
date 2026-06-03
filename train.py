@@ -75,8 +75,10 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     run.define_metric("epoch")
     run.define_metric("train/loss", step_metric="epoch")
     run.define_metric("train/accuracy", step_metric="epoch")
-    run.define_metric("val/loss", step_metric="epoch")
-    run.define_metric("val/accuracy", step_metric="epoch")
+    run.define_metric("val/orig_loss", step_metric="epoch")
+    run.define_metric("val/orig_accuracy", step_metric="epoch")
+    run.define_metric("val/ema_loss", step_metric="epoch")
+    run.define_metric("val/ema_accuracy", step_metric="epoch")
 
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
@@ -306,7 +308,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             print(f"Average validation loss: {avg_val_loss:.5f}")
             print(f"Average validation accuracy: {avg_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/orig/loss": avg_val_loss, "val/orig/accuracy": avg_val_acc})
+            run.log({"epoch": epoch, "val/orig_loss": avg_val_loss, "val/orig_accuracy": avg_val_acc})
 
             # Validation on EMA model
             ema_model.eval()
@@ -355,7 +357,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             print(f"Average EMA validation loss: {avg_ema_val_loss:.5f}")
             print(f"Average EMA validation accuracy: {avg_ema_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/ema/loss": avg_ema_val_loss, "val/ema/accuracy": avg_ema_val_acc})
+            run.log({"epoch": epoch, "val/ema_loss": avg_ema_val_loss, "val/ema_accuracy": avg_ema_val_acc})
 
         # Saving phase (save a checkpoint every few epochs)
         if epoch % train_config.save_every_n_epochs == 0:
