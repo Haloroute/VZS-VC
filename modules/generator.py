@@ -59,6 +59,7 @@ class VoiceGenerator(nn.Module):
         self.fsq_embedding = nn.Embedding(n_bins ** d_fsq, d_fsq)
         self.fsq_projection = nn.Linear(d_fsq, d_token)
         self.token_projection = nn.Linear(d_token, d_model) if d_token != d_model else nn.Identity()
+        self.mask_token = nn.Parameter(torch.zeros(d_token))
 
         # Embedding layers for pitch, amplitude features
         self.pitch_embedding = LogEmbedding(n_pitch, d_pitch, min_pitch, max_pitch)
@@ -85,6 +86,7 @@ class VoiceGenerator(nn.Module):
         # Initialize the parameters of embedding layers
         self.pitch_embedding.init_params()
         self.amplitude_embedding.init_params()
+        nn.init.trunc_normal_(self.mask_token, std=std)
 
         # Copy pre-trained weights for embedding layers if provided
         if fsq_weight is not None:
@@ -121,7 +123,7 @@ class VoiceGenerator(nn.Module):
     def forward(
         self,
         content: Tensor, pitch: Tensor, amplitude: Tensor, token: Tensor,
-        content_length: Tensor, token_length: Tensor
+        mask_indices: Tensor, content_length: Tensor, token_length: Tensor
     ) -> Tensor:
         """
         Forward pass for the VoiceGenerator.
@@ -132,6 +134,7 @@ class VoiceGenerator(nn.Module):
             amplitude (Tensor): Amplitude features of shape (N, T).
             token (Tensor): Token tensor for teacher forcing of shape (N, T).
 
+            mask_indices (Tensor): Indices of tokens to be masked, shape (N, T). True for positions to be masked, False for positions to be kept.
             content_length (Tensor): Lengths of content sequences for masking, shape (N,).
             token_length (Tensor): Lengths of token sequences for masking, which is also pitch & amplitude lengths, shape (N,).
 
@@ -178,7 +181,10 @@ class VoiceGenerator(nn.Module):
         amplitude_emb: Tensor = self.amplitude_embedding(amplitude) # (N, T) -> (N, T, D_amplitude)
 
         fsq_emb: Tensor = self.fsq_embedding(token) # (N, T) -> (N, T, D_fsq)
-        fsq_emb: Tensor = self.fsq_projection(fsq_emb) # (N, T, D_fsq) -> (N, T, D_token)
+        token_emb: Tensor = self.fsq_projection(fsq_emb) # (N, T, D_fsq) -> (N, T, D_token)
+
+        # Apply mask token based on mask_indices
+        token_emb: Tensor = torch.where(mask_indices.unsqueeze(-1).bool(), self.mask_token, token_emb) # (N, T, D_token)
         token_emb: Tensor = self.token_projection(token_emb) # (N, T, D_token) -> (N, T, D_model)
 
         # Step 3: Concatenate content, pitch and amplitude features, and project to d_model dimension.
