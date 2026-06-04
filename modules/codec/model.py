@@ -138,7 +138,7 @@ class NeuCodec(
             audio_or_path: torch.Tensor [B, 1, T] | Path | str, input audio
 
         Returns:
-            fsq_codes: torch.Tensor [B, 1, F], 50hz FSQ codes
+            fsq_codes: torch.Tensor [B, F], 50hz FSQ codes
         """
          
         # prepare inputs
@@ -176,7 +176,7 @@ class NeuCodec(
 
         # quantize
         _, fsq_codes, _ = self.generator(concat_emb, vq=True)
-        return fsq_codes
+        return fsq_codes.squeeze(1) # (B, 1, F) -> (B, F)
 
     def encode_pre_vq(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -229,13 +229,13 @@ class NeuCodec(
     def decode_code(self, fsq_codes: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            fsq_codes: torch.Tensor [B, 1, F], 50hz FSQ codes
+            fsq_codes: torch.Tensor [B, F], 50hz FSQ codes
 
         Returns:
             recon: torch.Tensor [B, 1, T], reconstructed 24kHz audio
         """
 
-        fsq_post_emb = self.generator.quantizer.get_output_from_indices(fsq_codes.transpose(1, 2))
+        fsq_post_emb = self.generator.quantizer.get_output_from_indices(fsq_codes.unsqueeze(1).transpose(1, 2))
         fsq_post_emb = fsq_post_emb.transpose(1, 2)
         fsq_post_emb = self.fc_post_a(fsq_post_emb.transpose(1, 2)).transpose(1, 2) 
         recon = self.generator(fsq_post_emb.transpose(1, 2), vq=False)[0]
@@ -286,7 +286,7 @@ class DistillNeuCodec(NeuCodec):
             audio_or_path: torch.Tensor [B, 1, T] | Path | str, input audio
 
         Returns:
-            fsq_codes: torch.Tensor [B, 1, F], 50hz FSQ codes
+            fsq_codes: torch.Tensor [B, F], 50hz FSQ codes
         """
          
         # prepare inputs
@@ -324,7 +324,7 @@ class DistillNeuCodec(NeuCodec):
         concat_emb = torch.cat([semantic_target, fsq_emb], dim=1)
         concat_emb = self.fc_prior(concat_emb.transpose(1, 2)).transpose(1, 2)
         _, fsq_codes, _ = self.generator(concat_emb, vq=True)
-        return fsq_codes
+        return fsq_codes.squeeze(1) # (B, 1, F) -> (B, F)
     
     def encode_pre_vq(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """

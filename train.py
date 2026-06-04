@@ -75,8 +75,10 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     run.define_metric("epoch")
     run.define_metric("train/loss", step_metric="epoch")
     run.define_metric("train/accuracy", step_metric="epoch")
-    run.define_metric("val/loss", step_metric="epoch")
-    run.define_metric("val/accuracy", step_metric="epoch")
+    run.define_metric("val/orig_loss", step_metric="epoch")
+    run.define_metric("val/orig_accuracy", step_metric="epoch")
+    run.define_metric("val/ema_loss", step_metric="epoch")
+    run.define_metric("val/ema_accuracy", step_metric="epoch")
 
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
@@ -192,17 +194,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             # Move the batch to the specified device (GPU or CPU)
             batch: TensorDict = batch.to(train_config.device, non_blocking=True)
             # batch is a TensorDict containing:
-            # "content": content_padded, # (N, T_content, D_content)
-            # "pitch": pitch_padded, # (N, T_pitch)
-            # "amplitude": amplitude_padded, # (N, T_amplitude)
-            # "timbre": acoustic_padded, # (N, T_timbre, D_timbre)
-            # "target": pre_vq_padded, # (N, T, D_codec)
+            # "content": content_padded, # (N, T', D_content)
+            # "pitch": pitch_padded, # (N, T)
+            # "amplitude": amplitude_padded, # (N, T)
+            # "timbre": timbre_padded, # (N, D_timbre)
+            # "target_in": target_in_padded, # (N, T + 1)
+            # "target_out": target_out_padded, # (N, T + 1)
 
             # "content_length": content_length, # (N,)
-            # "pitch_length": pitch_length, # (N,)
-            # "amplitude_length": amplitude_length, # (N,)
-            # "timbre_length": acoustic_length # (N,)
-            # "target_length": pre_vq_length, # (N,)
+            # "source_length": pitch_length, # (N,)
+            # "target_length": target_length, # (N,)
 
             # Zero the gradients
             optimizer.zero_grad()
@@ -215,17 +216,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                     pitch=batch['pitch'],
                     amplitude=batch['amplitude'],
                     timbre=batch['timbre'],
+                    target=batch['target_in'],
 
                     content_length=batch['content_length'],
-                    pitch_length=batch['pitch_length'],
-                    amplitude_length=batch['amplitude_length'],
-                    timbre_length=batch['timbre_length'],
-
-                    target_shape=batch['target'].shape,
+                    source_length=batch['source_length'],
                     target_length=batch['target_length']
-                ) # (N, N_bins, T, D_codec)
-                loss: Tensor = loss_fn(output, batch['target']) # CrossEntropyLoss expects (N, N_bins, T, D_codec) for the input and (N, T, D_codec) for the target
-                n_corrects, n_samples = calculate_accuracy(output, batch['target'])
+                ) # (N, N_tokens, T + 1)
+
+                # CrossEntropyLoss expects (N, N_tokens, T + 1) for the input and (N, T + 1) for the target
+                loss: Tensor = loss_fn(output, batch['target_out'])
+                n_corrects, n_samples = calculate_accuracy(output, batch['target_out'], ignore_index=int(dataset_config.ignore_value))
 
             # Backpropagation and optimization step
             scaler.scale(loss).backward()
@@ -277,17 +277,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
                             timbre=batch['timbre'],
+                            target=batch['target_in'],
 
                             content_length=batch['content_length'],
-                            pitch_length=batch['pitch_length'],
-                            amplitude_length=batch['amplitude_length'],
-                            timbre_length=batch['timbre_length'],
-
-                            target_shape=batch['target'].shape,
+                            source_length=batch['source_length'],
                             target_length=batch['target_length']
-                        ) # (N, N_bins, T, D_codec)
-                        loss: Tensor = loss_fn(output, batch['target'])
-                        n_corrects, n_samples = calculate_accuracy(output, batch['target'])
+                        ) # (N, N_tokens, T + 1)
+
+                        # CrossEntropyLoss expects (N, N_tokens, T + 1) for the input and (N, T + 1) for the target
+                        loss: Tensor = loss_fn(output, batch['target_out'])
+                        n_corrects, n_samples = calculate_accuracy(output, batch['target_out'], ignore_index=int(dataset_config.ignore_value))
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
                     loss = loss.item()
@@ -309,7 +308,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             print(f"Average validation loss: {avg_val_loss:.5f}")
             print(f"Average validation accuracy: {avg_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/orig/loss": avg_val_loss, "val/orig/accuracy": avg_val_acc})
+            run.log({"epoch": epoch, "val/orig_loss": avg_val_loss, "val/orig_accuracy": avg_val_acc})
 
             # Validation on EMA model
             ema_model.eval()
@@ -329,17 +328,14 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
                             timbre=batch['timbre'],
+                            target=batch['target_in'],
 
                             content_length=batch['content_length'],
-                            pitch_length=batch['pitch_length'],
-                            amplitude_length=batch['amplitude_length'],
-                            timbre_length=batch['timbre_length'],
-
-                            target_shape=batch['target'].shape,
+                            source_length=batch['source_length'],
                             target_length=batch['target_length']
-                        ) # (N, N_bins, T, D_codec)
-                        loss: Tensor = loss_fn(output, batch['target'])
-                        n_corrects, n_samples = calculate_accuracy(output, batch['target'])
+                        ) # (N, N_tokens, T + 1)
+                        loss: Tensor = loss_fn(output, batch['target_out'])
+                        n_corrects, n_samples = calculate_accuracy(output, batch['target_out'], ignore_index=int(dataset_config.ignore_value))
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
                     loss = loss.item()
@@ -361,7 +357,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             print(f"Average EMA validation loss: {avg_ema_val_loss:.5f}")
             print(f"Average EMA validation accuracy: {avg_ema_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/ema/loss": avg_ema_val_loss, "val/ema/accuracy": avg_ema_val_acc})
+            run.log({"epoch": epoch, "val/ema_loss": avg_ema_val_loss, "val/ema_accuracy": avg_ema_val_acc})
 
         # Saving phase (save a checkpoint every few epochs)
         if epoch % train_config.save_every_n_epochs == 0:

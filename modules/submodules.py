@@ -8,6 +8,64 @@ from torch import Tensor
 from typing import Self
 
 
+# Function to calculate ALiBi slopes for each attention head based on the original ALiBi paper.
+def get_alibi_slopes(n_heads: int) -> list[float]:
+    """
+    Tính toán hệ số dốc (slopes) m cho từng head theo bài báo ALiBi nguyên bản.
+    Đã xử lý chính xác cho cả trường hợp n_heads không phải là lũy thừa của 2.
+    """
+    def get_slopes_power_of_2(n: int) -> list[float]:
+        # Tương đương với 2^(-8/n)
+        start = (2 ** (-2 ** -(math.log2(n) - 3))) 
+        ratio = start
+        return [start * (ratio ** i) for i in range(n)]
+
+    if math.log2(n_heads).is_integer():
+        return get_slopes_power_of_2(n_heads)
+    else:
+        # Ví dụ n_heads = 12
+        closest_power_of_2 = 2 ** math.floor(math.log2(n_heads)) # 8
+        
+        # Tập slopes cơ bản từ 8 heads
+        base_slopes = get_slopes_power_of_2(closest_power_of_2) 
+        
+        # Lấy các slopes xen kẽ mới từ 16 heads bằng [0::2] để tránh trùng lặp
+        extra_slopes = get_slopes_power_of_2(2 * closest_power_of_2)[0::2]
+        
+        # Ghép lại và cắt đúng số lượng head còn thiếu
+        return base_slopes + extra_slopes[:n_heads - closest_power_of_2]
+
+# Function to generate cross-attention ALiBi bias for given number of heads and sequence lengths.
+def get_cross_alibi_bias(n_heads: int, T: int, S: int, device: torch.device = None) -> Tensor:
+    """
+    Sinh ra tensor ALiBi (n_heads, T, S) cho Cross-Attention.
+    Khoảng cách được tính theo công thức: D(i, j) = |i - j - (T - S)|
+    
+    Args:
+        n_heads (int): Số lượng attention heads.
+        T (int): Chiều dài chuỗi Query (Target).
+        S (int): Chiều dài chuỗi Key/Value (Source).
+        device (torch.device, optional): Device của tensor.
+
+    Returns:
+        Tensor: Ma trận ALiBi có kích thước (n_heads, T, S) mang giá trị âm hoặc 0.
+    """
+    # 1. Tạo lưới tọa độ
+    t_idx = torch.arange(T, device=device).unsqueeze(1)  # (T, 1)
+    s_idx = torch.arange(S, device=device).unsqueeze(0)  # (1, S)
+    
+    # 2. Tính ma trận khoảng cách tuyệt đối có dịch chuyển
+    distance = torch.abs(t_idx - s_idx - (T - S))  # (T, S)
+    
+    # 3. Lấy hệ số dốc cho từng head và định dạng lại tensor
+    slopes = torch.tensor(get_alibi_slopes(n_heads), device=device).view(n_heads, 1, 1)
+    
+    # 4. Tính toán ALiBi bias (Luôn mang giá trị <= 0 để phạt trước khi qua Softmax)
+    alibi_bias = -slopes * distance  # (n_heads, T, S)
+    
+    return alibi_bias
+
+
 # Logarithmic embedding for pitch and amplitude values.
 class LogEmbedding(nn.Module):
     """
@@ -64,58 +122,6 @@ class LogEmbedding(nn.Module):
         embeddings = self.embedding(bin_indices)
         return embeddings
 
-
-# Rotary positional embedding module for adding positional information to the input embeddings.
-class RotaryPositionalEmbedding(nn.Module):
-    """
-    Rotary positional embedding module for adding positional information to the input embeddings.
-    """
-    def __init__(self, d_embed: int):
-        """
-        Initialize the rotary positional embedding.
-        
-        Args:
-            d_embed (int): Dimensionality of the embeddings (must be even).
-        """
-        super().__init__()
-        assert d_embed % 2 == 0, "Embedding dimension must be even."
-        self.d_embed = d_embed
-
-        # Generate frequencies for the sinusoidal basis
-        self.register_buffer('inv_freq', 1.0 / (10000 ** (torch.arange(0, self.d_embed, 2).float() / self.d_embed)))
-
-    def encode(self, positions: Tensor) -> tuple[Tensor, Tensor]:
-        """
-        Generate rotary positional embeddings for given positions.
-        
-        Args:
-            positions (Tensor): Positional indices (seq_len,).
-        
-        Returns:
-            tuple[Tensor, Tensor]: Tuple of (sin_encoding, cos_encoding).
-        """
-        # Compute angles (positions * frequencies)
-        angles = torch.einsum("i,j->ij", positions, self.inv_freq)        
-        angles = torch.repeat_interleave(angles, 2, dim=-1)
-        return (torch.sin(angles), torch.cos(angles))
-
-    def forward(self, x: Tensor, sin_cos: tuple[Tensor, Tensor]) -> Tensor:
-        """
-        Apply rotary embedding to input tensor.
-        
-        Args:
-            x (Tensor): Input tensor (batch_size, seq_len, embedding_dim).
-            sin_cos (tuple): Tuple of (sin_encoding, cos_encoding).
-        
-        Returns:
-            Tensor: Tensor after applying rotary embedding.
-        """
-        sin_encoding, cos_encoding = sin_cos
-        # Apply rotation: x * cos + (rotate(x) * sin)
-        x1, x2 = x[..., ::2], x[..., 1::2]  # Split into pairs
-        rotated_x = torch.stack((-x2, x1), dim=-1).reshape_as(x)  # Rotate pairs
-        return x * cos_encoding + rotated_x * sin_encoding
-    
 
 # SwiGLU activation function module, used in the feedforward layers of the DiT block.
 class SwiGLU(nn.Module):
@@ -212,11 +218,15 @@ class MLP(nn.Module):
         return out
     
 
-class MultiheadSelfAttentionWithRoPE(nn.Module):
+class MultiheadSelfAttentionWithALiBi(nn.Module):
     """
-    Multi-head self-attention module that incorporates Rotary Positional Embeddings (RoPE) for enhanced positional encoding.
+    Multi-head self-attention module that incorporates ALiBi (Attention with Linear Biases) for enhanced positional encoding.
     """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+    def __init__(
+        self,
+        d_model: int, n_heads: int, dropout: float = 0.1,
+        d_query: int | None = None, d_key: int | None = None, d_value: int | None = None
+    ):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads."
 
@@ -226,20 +236,21 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         self.dropout = dropout
         self._dropout = dropout
 
-        # Multi-head attention layer
-        self.q_project = nn.Linear(d_model, d_model, bias=False)
-        self.k_project = nn.Linear(d_model, d_model, bias=False)
-        self.v_project = nn.Linear(d_model, d_model, bias=False)
-        self.out_project = nn.Linear(d_model, d_model, bias=False)
+        self.d_query = d_query or d_model
+        self.d_key = d_key or d_model
+        self.d_value = d_value or d_model
 
-        # Rotary positional embedding module
-        self.rope = RotaryPositionalEmbedding(d_model // n_heads)
+        # Multi-head attention layer
+        self.q_project = nn.Linear(self.d_query, d_model, bias=False)
+        self.k_project = nn.Linear(self.d_key, d_model, bias=False)
+        self.v_project = nn.Linear(self.d_value, d_model, bias=False)
+        self.out_project = nn.Linear(d_model, self.d_query, bias=False)
 
         self.init_params()
 
     def init_params(self, std: float = 0.02):
         """
-        Initialize the parameters of the MultiheadSelfAttentionWithRoPE module using truncated normal initialization.
+        Initialize the parameters of the MultiheadSelfAttentionWithALiBi module using truncated normal initialization.
         """
         nn.init.trunc_normal_(self.q_project.weight, std=std)
         nn.init.trunc_normal_(self.k_project.weight, std=std)
@@ -248,7 +259,7 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
 
     def train(self, mode: bool = True) -> Self:
         """
-        Override the default train() method to ensure that the RoPE module is also set to training mode when the parent module is set to training mode.
+        Override the default train() method to ensure that the ALiBi module is also set to training mode when the parent module is set to training mode.
         
         Args:
             mode (bool): If True, sets the module in training mode. If False, sets it in evaluation mode.
@@ -260,60 +271,65 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         self._dropout = self.dropout if mode else 0.0
         return self
 
-    def forward(self, x: Tensor, key_padding_mask: Tensor) -> Tensor:
+    def forward(self, query: Tensor, key: Tensor, value: Tensor, key_padding_mask: Tensor, is_causal: bool = False) -> Tensor:
         """
-        Forward pass for the multi-head self-attention with RoPE.
-        
+        Forward pass for the multi-head self-attention with ALiBi.
+
         Args:
-            x (Tensor): Input tensor of shape (N, T, D_model).
-            key_padding_mask (Tensor): Boolean mask for padded positions, shape (N, T).
-        
+            query (Tensor): Input tensor of shape (N, T, D_query).
+            key (Tensor): Input tensor of shape (N, S, D_key).
+            value (Tensor): Input tensor of shape (N, S, D_value).
+            key_padding_mask (Tensor): Boolean mask for padded positions, shape (N, S).
+            is_causal (bool): Whether to apply causal masking. Default is False.
+
         Returns:
-            Tensor: Output tensor of shape (N, T, D_model) after applying multi-head attention with RoPE.
+            Tensor: Output tensor of shape (N, T, D_query) after applying multi-head attention with ALiBi.
         """        
-        N, T, _ = x.shape
-        device = x.device
+        N, T, _ = query.shape
+        _, S, _ = key.shape
+        device = query.device
         d_head = self.d_model // self.n_heads
 
         # Step 1: Project to query, key, value spaces
-        q = self.q_project(x)  # (N, T, D_model)
-        k = self.k_project(x)  # (N, T, D_model)
-        v = self.v_project(x)  # (N, T, D_model)
+        q = self.q_project(query)  # (N, T, D_model)
+        k = self.k_project(key)  # (N, S, D_model)
+        v = self.v_project(value)  # (N, S, D_model)
 
         # Step 2: Reshape and transpose for multi-head attention
-        q = q.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, n_heads, T, d_head)
-        k = k.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, n_heads, T, d_head)
-        v = v.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, n_heads, T, d_head)
+        q = q.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, N_heads, T, D_head)
+        k = k.view(N, S, self.n_heads, d_head).transpose(1, 2)  # (N, N_heads, S, D_head)
+        v = v.view(N, S, self.n_heads, d_head).transpose(1, 2)  # (N, N_heads, S, D_head)
 
-        # Step 3: Generate and apply RoPE embeddings based on sequence length
-        sin_cos = self.rope.encode(torch.arange(T, device=device))  # (T, d_head) -> (sin_encoding, cos_encoding)
-        rope_q = self.rope(q, sin_cos)  # (N, n_heads, T, d_head)
-        rope_k = self.rope(k, sin_cos)  # (N, n_heads, T, d_head)
+        # Step 3: Generate and apply ALiBi biases
+        alibi_bias = get_cross_alibi_bias(self.n_heads, T, S, device=device)  # (n_heads, T, S)
 
         # Step 4: Prepare attention mask as an additive float mask
-        attn_mask = torch.zeros((N, 1, 1, T), dtype=q.dtype, device=device)
-        attn_mask = attn_mask.masked_fill(key_padding_mask.view(N, 1, 1, T), float("-inf"))
+        attn_mask = torch.zeros((N, 1, 1, S), dtype=q.dtype, device=device)
+        attn_mask = attn_mask.masked_fill(key_padding_mask.view(N, 1, 1, S), float("-inf"))
+        attn_mask = attn_mask + alibi_bias.unsqueeze(0)  # (N, n_heads, T, S)
+        if is_causal:
+            causal_mask = torch.triu(torch.full((T, S), float("-inf"), dtype=q.dtype, device=device), diagonal=1)  # (T, S)
+            attn_mask = attn_mask + causal_mask # (N, 1, T, S)
 
         # Step 5: Compute scaled dot-product attention
         attn_output = F.scaled_dot_product_attention(
-            query=rope_q,
-            key=rope_k,
+            query=q,
+            key=k,
             value=v,
             attn_mask=attn_mask,
-            dropout_p=self._dropout,
-            is_causal=False
-        ) # (N, n_heads, T, d_head)
+            dropout_p=self._dropout
+        ) # (N, N_heads, T, D_head)
 
         # Step 6: Reproject output
         attn_output = attn_output.transpose(1, 2).contiguous().view(N, T, self.d_model) # (N, T, D_model)
-        output = self.out_project(attn_output) # (N, T, D_model)
+        output = self.out_project(attn_output) # (N, T, D_query)
 
         return output
 
 
 class TransformerBlock(nn.Module):
     """
-    Transformer Decoder-like block module that combines Transformer Decoder layers with RoPE.
+    Transformer Decoder-like block module that combines Transformer Decoder layers with ALiBi.
     """
     def __init__(
         self,
@@ -338,16 +354,19 @@ class TransformerBlock(nn.Module):
         self.d_timbre = d_timbre
         self.dropout = dropout
 
+        # AdaRMSN-Zero conditioning projection for timbre embedding
+        self.timbre_mlp = MLP(d_timbre, d_model, 6 * d_model, dropout)
+
         # Multi-Head Self-Attention Layer
-        self.norm_1 = nn.RMSNorm(d_model)
-        self.self_attention = MultiheadSelfAttentionWithRoPE(d_model, n_heads, dropout)
+        self.norm_1 = nn.RMSNorm(d_model, elementwise_affine=False)
+        self.self_attention = MultiheadSelfAttentionWithALiBi(d_model, n_heads, dropout=dropout)
 
         # Multi-Head Cross-Attention Layer
-        self.norm_2 = nn.RMSNorm(d_model)
-        self.cross_attention = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, kdim=d_timbre, vdim=d_timbre, batch_first=True)
+        self.norm_2 = nn.RMSNorm(d_model, elementwise_affine=False)
+        self.cross_attention = MultiheadSelfAttentionWithALiBi(d_model, n_heads, dropout=dropout)
 
         # Feed-Forward Network (MLP)
-        self.norm_3 = nn.RMSNorm(d_model)
+        self.norm_3 = nn.RMSNorm(d_model, elementwise_affine=False)
         self.mlp = MLP(d_model, d_ff, d_model, dropout)
 
         # Initialize parameters
@@ -359,27 +378,18 @@ class TransformerBlock(nn.Module):
         """
         # Initialize attention layers using truncated normal initialization
         self.self_attention.init_params(std=std)
-        for attn in [self.cross_attention]:
-            if attn.in_proj_weight is not None:
-                nn.init.trunc_normal_(attn.in_proj_weight, std=std)
-            else:
-                nn.init.trunc_normal_(attn.q_proj_weight, std=std)
-                nn.init.trunc_normal_(attn.k_proj_weight, std=std)
-                nn.init.trunc_normal_(attn.v_proj_weight, std=std)
-
-            if attn.in_proj_bias is not None:
-                nn.init.zeros_(attn.in_proj_bias)
-
-            nn.init.trunc_normal_(attn.out_proj.weight, std=std)
-            if attn.out_proj.bias is not None:
-                nn.init.zeros_(attn.out_proj.bias)
+        self.cross_attention.init_params(std=std)
 
         # Initialize MLP layers
         self.mlp.init_params(std=std)
 
+        # Initialize timbre MLP layers
+        self.timbre_mlp.init_params(std=std)
+        nn.init.zeros_(self.timbre_mlp.w_down.weight)
+
     def forward(
         self,
-        target: Tensor, source: Tensor,
+        target: Tensor, source: Tensor, timbre: Tensor,
         target_length: Tensor, source_length: Tensor
     ) -> Tensor:
         """
@@ -387,7 +397,8 @@ class TransformerBlock(nn.Module):
         
         Args:
             target (Tensor): Target tensor of shape (N, T, D_model), came from the previous layer.
-            source (Tensor): Source tensor of shape (N, S, D_timbre), came from the timbre conditioning.
+            source (Tensor): Source tensor of shape (N, S, D_model), came from the (content + pitch + amplitude) conditioning.
+            timbre (Tensor): Timbre tensor of shape (N, D_timbre), came from the timbre conditioning.
             target_length (Tensor): Lengths of the target sequences (N,).
             source_length (Tensor): Lengths of the source sequences (N,).
 
@@ -397,23 +408,39 @@ class TransformerBlock(nn.Module):
         N, T, _ = target.shape
         _, S, _ = source.shape
 
-        # Step 0: Create padding masks for target and source sequences (True for padding positions, False for valid positions)
+        # Step 1: Create padding masks for target and source sequences (True for padding positions, False for valid positions)
         target_pad_mask = torch.arange(T, device=target.device).unsqueeze(0) >= target_length.unsqueeze(1) # (N, T)
         source_pad_mask = torch.arange(S, device=source.device).unsqueeze(0) >= source_length.unsqueeze(1) # (N, S)
 
+        # Step 1: AdaRMSN-Zero conditioning for timbre embedding
+        timbre_condition: Tensor = self.timbre_mlp(timbre).unsqueeze(1) # (N, 1, 6 * D_model)
+        pre_scale_1, post_scale_1, pre_scale_2, post_scale_2, pre_scale_3, post_scale_3 = timbre_condition.chunk(6, dim=-1) # (N, 1, D_model)
+
         # Step 2: Multi-Head Self-Attention with AdaRMSN-Zero
-        normed_target_1: Tensor = self.norm_1(target) # (N, T, D_model)
-        attn_output_1: Tensor = self.self_attention(normed_target_1, key_padding_mask=target_pad_mask) # (N, T, D_model)
-        target = target + attn_output_1 # (N, T, D_model)
+        normed_target_1: Tensor = self.norm_1(target) * (1 + pre_scale_1) # (N, T, D_model)
+        attn_output_1: Tensor = self.self_attention(
+            query=normed_target_1, 
+            key=normed_target_1,
+            value=normed_target_1,
+            key_padding_mask=target_pad_mask,
+            is_causal=True
+        ) # (N, T, D_model)
+        target = target + attn_output_1 * post_scale_1 # (N, T, D_model)
 
         # Step 3: Multi-Head Cross-Attention with AdaRMSN-Zero
-        normed_target_2: Tensor = self.norm_2(target) # (N, T, D_model)
-        attn_output_2: Tensor = self.cross_attention(normed_target_2, source, source, key_padding_mask=source_pad_mask)[0] # (N, T, D_model)
-        target = target + attn_output_2 # (N, T, D_model)
+        normed_target_2: Tensor = self.norm_2(target) * (1 + pre_scale_2) # (N, T, D_model)
+        attn_output_2: Tensor = self.cross_attention(
+            query=normed_target_2,
+            key=source,
+            value=source,
+            key_padding_mask=source_pad_mask,
+            is_causal=False
+        ) # (N, T, D_model)
+        target = target + attn_output_2 * post_scale_2 # (N, T, D_model)
 
         # Step 4: Feed-Forward Network (MLP) with AdaRMSN-Zero
-        normed_target_3: Tensor = self.norm_3(target) # (N, T, D_model)
+        normed_target_3: Tensor = self.norm_3(target) * (1 + pre_scale_3) # (N, T, D_model)
         mlp_output: Tensor = self.mlp(normed_target_3) # (N, T, D_model)
-        target = target + mlp_output # (N, T, D_model)
+        target = target + mlp_output * post_scale_3 # (N, T, D_model)
 
         return target # (N, T, D_model)
