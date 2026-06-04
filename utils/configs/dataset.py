@@ -39,6 +39,7 @@ class VieNeuTTSPreprocessedDatasetConfig:
     path: str = "Haloroute/VieNeu-TTS-140h-preprocessed"
     train_split: str = "train" # Split name for training data in the preprocessed dataset
     val_split: str = "test" # Split name for validation data in the preprocessed dataset
+    streaming: bool = False # Whether to load the dataset in streaming mode (useful for large datasets that don't fit in memory)
 
     amplitude_column: str = "amplitude_embedding" # Column name for amplitude embedding in the preprocessed dataset
     content_column: str = "content_embedding" # Column name for content embedding in the preprocessed dataset
@@ -46,7 +47,7 @@ class VieNeuTTSPreprocessedDatasetConfig:
     timbre_column: str = "timbre_embedding" # Column name for timbre embedding in the preprocessed dataset
     code_column: str = "code_embedding" # Column name for code embedding in the preprocessed dataset
 
-    start_token: int = 2 ** 16 # Start token ID for target sequences
-    end_token: int = 2 ** 16 + 1 # End token ID for target sequences
-    ignore_value: float = -100.0 # The padding value that should be ignored in the target sequences.
+    min_mask_ration: float = 0.1 # Minimum ratio of the sequence to be masked for data augmentation during training
+    max_mask_ration: float = 0.9 # Maximum ratio of the sequence to be masked for data augmentation during training
+    ignore_token: int = -100 # The padding value that should be ignored in the target sequences.
     seed: int = 42 # Random seed for reproducibility when loading the preprocessed dataset

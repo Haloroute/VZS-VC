@@ -83,7 +83,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     # Load the preprocessed dataset using the specified configuration
     dataset = datasets.load_dataset(
         dataset_config.path,
-        streaming=False
+        streaming=dataset_config.streaming
     )
     train_dataset, val_dataset = dataset[dataset_config.train_split].with_format("torch"), dataset[dataset_config.val_split].with_format("torch")
     # train_dataset = train_dataset.shuffle(seed=dataset_config.seed)
@@ -100,10 +100,11 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     print(f"Number of validation samples: {n_val_samples}")
 
     # Create DataLoaders for training and validation
-    collate_fn_wrapper = partial(collate_fn, config=dataset_config)
+    collate_fn_wrapper = partial(collate_fn, dataset_config=dataset_config, model_config=model_config)
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
+        shuffle=not dataset_config.streaming, # Shuffle only if not streaming (streaming datasets cannot be shuffled in-memory)
         num_workers=train_config.n_workers,
         collate_fn=collate_fn_wrapper,
         pin_memory=True
@@ -197,13 +198,12 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             # "content": content_padded, # (N, T', D_content)
             # "pitch": pitch_padded, # (N, T)
             # "amplitude": amplitude_padded, # (N, T)
-            # "timbre": timbre_padded, # (N, D_timbre)
-            # "target_in": target_in_padded, # (N, T + 1)
-            # "target_out": target_out_padded, # (N, T + 1)
+            # "token": token_padded, # (N, T)
 
+            # "mask_indices": mask_indices_padded, # (N, T)
             # "content_length": content_length, # (N,)
-            # "source_length": pitch_length, # (N,)
-            # "target_length": target_length, # (N,)
+            # 'token_length': token_length, # (N,)
+            # 'target': target_padded, # (N, T, D_fsq)
 
             # Zero the gradients
             optimizer.zero_grad()
@@ -215,17 +215,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                     content=batch['content'],
                     pitch=batch['pitch'],
                     amplitude=batch['amplitude'],
-                    timbre=batch['timbre'],
-                    target=batch['target_in'],
+                    token=batch['token'],
 
+                    mask_indices=batch['mask_indices'],
                     content_length=batch['content_length'],
-                    source_length=batch['source_length'],
-                    target_length=batch['target_length']
-                ) # (N, N_tokens, T + 1)
+                    token_length=batch['token_length'],
+                ) # (N, N_tokens, T, D_fsq)
 
-                # CrossEntropyLoss expects (N, N_tokens, T + 1) for the input and (N, T + 1) for the target
-                loss: Tensor = loss_fn(output, batch['target_out'])
-                n_corrects, n_samples = calculate_accuracy(output, batch['target_out'], ignore_index=int(dataset_config.ignore_value))
+                # CrossEntropyLoss expects (N, N_bins, T, D_fsq) for the input and (N, T, D_fsq) for the target
+                loss: Tensor = loss_fn(output, batch['target'])
+                n_corrects, n_samples = calculate_accuracy(output, batch['target'], ignore_index=dataset_config.ignore_token)
 
             # Backpropagation and optimization step
             scaler.scale(loss).backward()
@@ -276,17 +275,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             content=batch['content'],
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
-                            timbre=batch['timbre'],
-                            target=batch['target_in'],
+                            token=batch['token'],
 
+                            mask_indices=batch['mask_indices'],
                             content_length=batch['content_length'],
-                            source_length=batch['source_length'],
-                            target_length=batch['target_length']
-                        ) # (N, N_tokens, T + 1)
+                            token_length=batch['token_length'],
+                        ) # (N, N_tokens, T, D_fsq)
 
-                        # CrossEntropyLoss expects (N, N_tokens, T + 1) for the input and (N, T + 1) for the target
-                        loss: Tensor = loss_fn(output, batch['target_out'])
-                        n_corrects, n_samples = calculate_accuracy(output, batch['target_out'], ignore_index=int(dataset_config.ignore_value))
+                        # CrossEntropyLoss expects (N, N_bins, T, D_fsq) for the input and (N, T, D_fsq) for the target
+                        loss: Tensor = loss_fn(output, batch['target'])
+                        n_corrects, n_samples = calculate_accuracy(output, batch['target'], ignore_index=dataset_config.ignore_token)
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
                     loss = loss.item()
@@ -327,15 +325,16 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             content=batch['content'],
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
-                            timbre=batch['timbre'],
-                            target=batch['target_in'],
+                            token=batch['token'],
 
+                            mask_indices=batch['mask_indices'],
                             content_length=batch['content_length'],
-                            source_length=batch['source_length'],
-                            target_length=batch['target_length']
-                        ) # (N, N_tokens, T + 1)
-                        loss: Tensor = loss_fn(output, batch['target_out'])
-                        n_corrects, n_samples = calculate_accuracy(output, batch['target_out'], ignore_index=int(dataset_config.ignore_value))
+                            token_length=batch['token_length'],
+                        ) # (N, N_tokens, T, D_fsq)
+
+                        # CrossEntropyLoss expects (N, N_bins, T, D_fsq) for the input and (N, T, D_fsq) for the target
+                        loss: Tensor = loss_fn(output, batch['target'])
+                        n_corrects, n_samples = calculate_accuracy(output, batch['target'], ignore_index=dataset_config.ignore_token)
 
                     # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
                     loss = loss.item()
