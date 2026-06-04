@@ -260,17 +260,18 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         self._dropout = self.dropout if mode else 0.0
         return self
 
-    def forward(self, x: Tensor, key_padding_mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, key_padding_mask: Tensor, is_causal: bool = False) -> Tensor:
         """
         Forward pass for the multi-head self-attention with RoPE.
-        
+
         Args:
-            x (Tensor): Input tensor of shape (N, T, D_model).
+            x (Tensor): Input tensor of shape (N, T, D).
             key_padding_mask (Tensor): Boolean mask for padded positions, shape (N, T).
-        
+            is_causal (bool): Whether to apply causal masking. Default is False.
+
         Returns:
             Tensor: Output tensor of shape (N, T, D_model) after applying multi-head attention with RoPE.
-        """        
+        """
         N, T, _ = x.shape
         device = x.device
         d_head = self.d_model // self.n_heads
@@ -281,9 +282,9 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         v = self.v_project(x)  # (N, T, D_model)
 
         # Step 2: Reshape and transpose for multi-head attention
-        q = q.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, n_heads, T, d_head)
-        k = k.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, n_heads, T, d_head)
-        v = v.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, n_heads, T, d_head)
+        q = q.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, N_heads, T, D_head)
+        k = k.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, N_heads, T, D_head)
+        v = v.view(N, T, self.n_heads, d_head).transpose(1, 2)  # (N, N_heads, T, D_head)
 
         # Step 3: Generate and apply RoPE embeddings based on sequence length
         sin_cos = self.rope.encode(torch.arange(T, device=device))  # (T, d_head) -> (sin_encoding, cos_encoding)
@@ -293,6 +294,9 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
         # Step 4: Prepare attention mask as an additive float mask
         attn_mask = torch.zeros((N, 1, 1, T), dtype=q.dtype, device=device)
         attn_mask = attn_mask.masked_fill(key_padding_mask.view(N, 1, 1, T), float("-inf"))
+        if is_causal:
+            causal_mask = torch.triu(torch.full((T, T), float("-inf"), dtype=q.dtype, device=device), diagonal=1)  # (T, T)
+            attn_mask = attn_mask + causal_mask # (N, 1, T, T)
 
         # Step 5: Compute scaled dot-product attention
         attn_output = F.scaled_dot_product_attention(
@@ -300,9 +304,8 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
             key=rope_k,
             value=v,
             attn_mask=attn_mask,
-            dropout_p=self._dropout,
-            is_causal=False
-        ) # (N, n_heads, T, d_head)
+            dropout_p=self._dropout
+        ) # (N, N_heads, T, D_head)
 
         # Step 6: Reproject output
         attn_output = attn_output.transpose(1, 2).contiguous().view(N, T, self.d_model) # (N, T, D_model)
@@ -313,21 +316,19 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
 
 class TransformerBlock(nn.Module):
     """
-    Transformer Decoder-like block module that combines Transformer Decoder layers with RoPE.
+    Transformer Encoder-like block module that combines Transformer Encoder layers with RoPE.
     """
     def __init__(
         self,
-        d_model: int, n_heads: int, d_ff: int,
-        d_timbre: int, dropout: float = 0.1
+        d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1
     ):
         """
-        Initialize the TransformerBlock with specified parameters for the Transformer Decoder and conditioning dimensions.
+        Initialize the TransformerBlock with specified parameters for the Transformer Encoder and conditioning dimensions.
 
         Args:
             d_model (int): Dimensionality of the model (input/output of the Transformer layers).
             n_heads (int): Number of attention heads in the multi-head attention mechanism.
             d_ff (int): Dimensionality of the feed-forward network.
-            d_timbre (int): Dimensionality of the timbre conditioning.
             dropout (float): Dropout probability.
         """
         super().__init__()
@@ -335,19 +336,14 @@ class TransformerBlock(nn.Module):
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_ff = d_ff
-        self.d_timbre = d_timbre
         self.dropout = dropout
 
         # Multi-Head Self-Attention Layer
         self.norm_1 = nn.RMSNorm(d_model)
         self.self_attention = MultiheadSelfAttentionWithRoPE(d_model, n_heads, dropout)
 
-        # Multi-Head Cross-Attention Layer
-        self.norm_2 = nn.RMSNorm(d_model)
-        self.cross_attention = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, kdim=d_timbre, vdim=d_timbre, batch_first=True)
-
         # Feed-Forward Network (MLP)
-        self.norm_3 = nn.RMSNorm(d_model)
+        self.norm_2 = nn.RMSNorm(d_model)
         self.mlp = MLP(d_model, d_ff, d_model, dropout)
 
         # Initialize parameters
@@ -359,61 +355,41 @@ class TransformerBlock(nn.Module):
         """
         # Initialize attention layers using truncated normal initialization
         self.self_attention.init_params(std=std)
-        for attn in [self.cross_attention]:
-            if attn.in_proj_weight is not None:
-                nn.init.trunc_normal_(attn.in_proj_weight, std=std)
-            else:
-                nn.init.trunc_normal_(attn.q_proj_weight, std=std)
-                nn.init.trunc_normal_(attn.k_proj_weight, std=std)
-                nn.init.trunc_normal_(attn.v_proj_weight, std=std)
-
-            if attn.in_proj_bias is not None:
-                nn.init.zeros_(attn.in_proj_bias)
-
-            nn.init.trunc_normal_(attn.out_proj.weight, std=std)
-            if attn.out_proj.bias is not None:
-                nn.init.zeros_(attn.out_proj.bias)
 
         # Initialize MLP layers
         self.mlp.init_params(std=std)
 
     def forward(
         self,
-        target: Tensor, source: Tensor,
-        target_length: Tensor, source_length: Tensor
+        input: Tensor, input_length: Tensor
     ) -> Tensor:
         """
         Forward pass for the Transformer Block.
-        
+
         Args:
-            target (Tensor): Target tensor of shape (N, T, D_model), came from the previous layer.
-            source (Tensor): Source tensor of shape (N, S, D_timbre), came from the timbre conditioning.
-            target_length (Tensor): Lengths of the target sequences (N,).
-            source_length (Tensor): Lengths of the source sequences (N,).
+            input (Tensor): Input tensor of shape (N, T, D_model), came from the (content + pitch + amplitude + token embeddings) conditioning.
+            input_length (Tensor): Lengths of the input sequences (N,).
 
         Returns:
             Tensor: Output tensor of shape (N, T, D_model) after processing through the Transformer block.
         """
-        N, T, _ = target.shape
-        _, S, _ = source.shape
+        N, T, _ = input.shape
 
-        # Step 0: Create padding masks for target and source sequences (True for padding positions, False for valid positions)
-        target_pad_mask = torch.arange(T, device=target.device).unsqueeze(0) >= target_length.unsqueeze(1) # (N, T)
-        source_pad_mask = torch.arange(S, device=source.device).unsqueeze(0) >= source_length.unsqueeze(1) # (N, S)
+        # Step 1: Create padding masks for input sequences (True for padding positions, False for valid positions)
+        pad_mask = torch.arange(T, device=input.device).unsqueeze(0) >= input_length.unsqueeze(1) # (N, T)
 
-        # Step 2: Multi-Head Self-Attention with AdaRMSN-Zero
-        normed_target_1: Tensor = self.norm_1(target) # (N, T, D_model)
-        attn_output_1: Tensor = self.self_attention(normed_target_1, key_padding_mask=target_pad_mask) # (N, T, D_model)
-        target = target + attn_output_1 # (N, T, D_model)
+        # Step 2: Multi-Head Self-Attention
+        normed_target_1: Tensor = self.norm_1(input) # (N, T, D_model)
+        attn_output: Tensor = self.self_attention(
+            x=normed_target_1,
+            key_padding_mask=pad_mask,
+            is_causal=False
+        ) # (N, T, D_model)
+        input = input + attn_output # (N, T, D_model)
 
-        # Step 3: Multi-Head Cross-Attention with AdaRMSN-Zero
-        normed_target_2: Tensor = self.norm_2(target) # (N, T, D_model)
-        attn_output_2: Tensor = self.cross_attention(normed_target_2, source, source, key_padding_mask=source_pad_mask)[0] # (N, T, D_model)
-        target = target + attn_output_2 # (N, T, D_model)
+        # Step 3: Feed-Forward Network (MLP)
+        normed_target_2: Tensor = self.norm_2(input) # (N, T, D_model)
+        mlp_output: Tensor = self.mlp(normed_target_2) # (N, T, D_model)
+        input = input + mlp_output # (N, T, D_model)
 
-        # Step 4: Feed-Forward Network (MLP) with AdaRMSN-Zero
-        normed_target_3: Tensor = self.norm_3(target) # (N, T, D_model)
-        mlp_output: Tensor = self.mlp(normed_target_3) # (N, T, D_model)
-        target = target + mlp_output # (N, T, D_model)
-
-        return target # (N, T, D_model)
+        return input # (N, T, D_model)
