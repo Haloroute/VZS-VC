@@ -13,7 +13,7 @@ class VoiceGenerator(nn.Module):
     """
     def __init__(
         self,
-        d_content: int, d_pitch: int, d_amplitude: int, d_token: int, d_fsq: int, n_bins: int,
+        d_content: int, d_pitch: int, d_amplitude: int, d_timbre: int, d_token: int, d_fsq: int, n_bins: int,
         n_pitch: int, min_pitch: float, max_pitch: float, n_amplitude: int, min_amplitude: float, max_amplitude: float,
         d_model: int, n_heads: int, d_ff: int, n_layers: int, dropout: float = 0.1,
         fsq_weight: str | Tensor | None = None, token_weight: str | Tensor | None = None
@@ -25,6 +25,7 @@ class VoiceGenerator(nn.Module):
             d_content (int): The dimensionality of the content embedding (came from VietASR content features). Should be 512.
             d_pitch (int): The dimensionality of the pitch embedding (after logarithmic embedding).
             d_amplitude (int): The dimensionality of the amplitude embedding (after logarithmic embedding).
+            d_timbre (int): The dimensionality of the timbre embedding (came from ERes2Net-V2). Should be 192.
             d_token (int): The dimensionality of the token embedding (came from NeuCodec token features). Should be 1024.
             d_fsq (int): The dimensionality of the finite scalar quantization embedding. Should be 8.
             n_bins (int): The number of bins for each dimension (used for Finite Scalar Quantization). Should be 4.
@@ -47,7 +48,7 @@ class VoiceGenerator(nn.Module):
         """
         super().__init__()
         # Initialize model parameters
-        self.d_content, self.d_pitch, self.d_amplitude = d_content, d_pitch, d_amplitude
+        self.d_content, self.d_pitch, self.d_amplitude, self.d_timbre = d_content, d_pitch, d_amplitude, d_timbre
         self.d_token, self.d_fsq, self.n_bins = d_token, d_fsq, n_bins
 
         self.n_pitch, self.min_pitch, self.max_pitch = n_pitch, min_pitch, max_pitch
@@ -66,7 +67,7 @@ class VoiceGenerator(nn.Module):
         self.amplitude_embedding = LogEmbedding(n_amplitude, d_amplitude, min_amplitude, max_amplitude)
 
         # Projection layers for input features
-        self.cpa_projection = nn.Linear(d_content + d_pitch + d_amplitude, d_model)
+        self.cpa_projection = nn.Linear(d_content + d_pitch + d_amplitude + d_timbre, d_model)
 
         # Transformer blocks
         self.transformer_blocks = nn.ModuleList([
@@ -122,7 +123,7 @@ class VoiceGenerator(nn.Module):
 
     def forward(
         self,
-        content: Tensor, pitch: Tensor, amplitude: Tensor, token: Tensor,
+        content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor, token: Tensor,
         mask_indices: Tensor, content_length: Tensor, token_length: Tensor
     ) -> Tensor:
         """
@@ -132,6 +133,7 @@ class VoiceGenerator(nn.Module):
             content (Tensor): Content features of shape (N, T', D_content). T' ~ T // 2.
             pitch (Tensor): Pitch features of shape (N, T).
             amplitude (Tensor): Amplitude features of shape (N, T).
+            timbre (Tensor): Timbre features of shape (N, D_timbre).
             token (Tensor): Token tensor for teacher forcing of shape (N, T).
 
             mask_indices (Tensor): Indices of tokens to be masked, shape (N, T). True for positions to be masked, False for positions to be kept.
@@ -188,8 +190,8 @@ class VoiceGenerator(nn.Module):
         token_emb: Tensor = self.token_projection(token_emb) # (N, T, D_token) -> (N, T, D_model)
 
         # Step 3: Concatenate content, pitch and amplitude features, and project to d_model dimension.
-        cpa: Tensor = torch.cat([content_interp, pitch_emb, amplitude_emb], dim=-1) # (N, T, D_content + D_pitch + D_amplitude)
-        cpa_emb: Tensor = self.cpa_projection(cpa) # (N, T, D_content + D_pitch + D_amplitude) -> (N, T, D_model)
+        cpa: Tensor = torch.cat([content_interp, pitch_emb, amplitude_emb, timbre.unsqueeze(1).expand(-1, T, -1)], dim=-1) # (N, T, D_content + D_pitch + D_amplitude + D_timbre)
+        cpa_emb: Tensor = self.cpa_projection(cpa) # (N, T, D_content + D_pitch + D_amplitude + D_timbre) -> (N, T, D_model)
         input: Tensor = token_emb + cpa_emb # (N, T, D_model)
 
         # Step 4: Pass through Transformer blocks with cross-attention to timbre features.

@@ -44,6 +44,7 @@ def collate_fn(
     content_padded, content_length = process_feature(dataset_config.content_column)
     amplitude_padded, _ = process_feature(dataset_config.amplitude_column)
     pitch_padded, _ = process_feature(dataset_config.pitch_column)
+    timbre_padded, _ = process_feature(dataset_config.timbre_column)
 
     # Xử lý riêng biệt đối với token và target
     token_list, mask_indices_list, target_list, token_length = [], [], [], []
@@ -82,6 +83,7 @@ def collate_fn(
         'content': content_padded, # (N, T', D_content)
         'pitch': pitch_padded, # (N, T)
         'amplitude': amplitude_padded, # (N, T)
+        'timbre': timbre_padded, # (N, D_timbre)
         'token': token_padded, # (N, T)
 
         'mask_indices': mask_indices_padded, # (N, T)
