@@ -12,10 +12,10 @@ from torch import Tensor
 from torch.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from transformers import get_cosine_schedule_with_warmup
 
 from modules import VoiceGenerator
 from utils.configs import (
@@ -134,20 +134,10 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         betas=train_config.beta,
         weight_decay=train_config.weight_decay
     )
-    scheduler_1 = LinearLR(
+    scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        start_factor=train_config.start_factor,
-        total_iters=train_config.n_warmup_epochs
-    )
-    scheduler_2 = CosineAnnealingLR(
-        optimizer,
-        T_max=train_config.n_epochs - train_config.n_warmup_epochs,
-        eta_min=train_config.lr * train_config.start_factor
-    )
-    scheduler = SequentialLR(
-        optimizer,
-        schedulers=[scheduler_1, scheduler_2],
-        milestones=[train_config.n_warmup_epochs]
+        num_warmup_steps=train_config.n_warmup_epochs,
+        num_training_steps=train_config.n_epochs
     )
     scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
     torch.manual_seed(train_config.seed)
@@ -165,15 +155,15 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         )
         print(f"Checkpoint loaded successfully. Resuming from epoch {start_epoch}, loss {start_loss}, accuracy {start_accuracy}%.")
 
-        # Update the learning rate of the optimizer
-        for param_group in optimizer.param_groups:
-            if 'initial_lr' in param_group and 'lr' in param_group:
-                param_group['lr'] *= train_config.lr / (param_group['initial_lr'] + 1e-8)
-                param_group['initial_lr'] = train_config.lr
+        # # Update the learning rate of the optimizer
+        # for param_group in optimizer.param_groups:
+        #     if 'initial_lr' in param_group and 'lr' in param_group:
+        #         param_group['lr'] *= train_config.lr / (param_group['initial_lr'] + 1e-8)
+        #         param_group['initial_lr'] = train_config.lr
 
-        # Update the learning rate of the scheduler
-        if hasattr(scheduler, 'base_lrs'):
-            scheduler.base_lrs = [train_config.lr for _ in scheduler.base_lrs]
+        # # Update the learning rate of the scheduler
+        # if hasattr(scheduler, 'base_lrs'):
+        #     scheduler.base_lrs = [train_config.lr for _ in scheduler.base_lrs]
 
     else:
         start_epoch = 0
