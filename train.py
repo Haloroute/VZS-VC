@@ -12,7 +12,7 @@ from torch import Tensor
 from torch.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -134,10 +134,20 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         betas=train_config.beta,
         weight_decay=train_config.weight_decay
     )
-    scheduler = LinearLR(
+    scheduler_1 = LinearLR(
         optimizer,
         start_factor=train_config.start_factor,
         total_iters=train_config.n_warmup_epochs
+    )
+    scheduler_2 = CosineAnnealingLR(
+        optimizer,
+        T_max=train_config.n_epochs - train_config.n_warmup_epochs,
+        eta_min=train_config.lr * train_config.start_factor
+    )
+    scheduler = SequentialLR(
+        optimizer,
+        schedulers=[scheduler_1, scheduler_2],
+        milestones=[train_config.n_warmup_epochs]
     )
     scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
     torch.manual_seed(train_config.seed)

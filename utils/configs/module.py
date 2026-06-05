@@ -59,11 +59,11 @@ class VoiceGeneratorModuleConfig:
     min_amplitude: float = 0.01 # The minimum value for amplitude embedding (should be a positive value). Should be around 0.01.
     max_amplitude: float = 0.85 # The maximum value for amplitude embedding (should be a positive value). Should be around 0.85.
 
-    d_model: int = 768 # The dimensionality of the model (feature dimension).
-    n_heads: int = 12 # The number of attention heads in each DiT block.
-    d_ff: int = 2048 # The dimensionality of the feed-forward layer in each DiT block.
-    n_layers: int = 12 # The number of DiT blocks in the generator.
-    dropout: float = 0.1 # The dropout rate for regularization.
+    d_model: int = 512 # The dimensionality of the model (feature dimension).
+    n_heads: int = 8 # The number of attention heads in each DiT block.
+    d_ff: int = 1536 # The dimensionality of the feed-forward layer in each DiT block.
+    n_layers: int = 8 # The number of DiT blocks in the generator.
+    dropout: float = 0.2 # The dropout rate for regularization.
 
     fsq_weight: str = 'checkpoints/fsq_weight.pt' # The path to the pretrained FSQ weight (derived from NeuCodec codebook).
     token_weight: str = 'checkpoints/token_weight.pt' # The path to the pretrained token weights (derived from NeuCodec codebook).
