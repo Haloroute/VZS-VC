@@ -48,9 +48,10 @@ class VoiceGeneratorModuleConfig:
     d_content: int = 512 # The dimensionality of the content embedding (came from VietASR content features). Should be 512.
     d_pitch: int = 32 # The dimensionality of the pitch embedding (after logarithmic embedding).
     d_amplitude: int = 32 # The dimensionality of the amplitude embedding (after logarithmic embedding).
-    d_timbre: int = 192 # The dimensionality of the timbre embedding (came from ERes2NetV2). Should be 192.
-    d_embedding: int = 1024 # The dimensionality of each token embedding. Should be 1024.
-    n_tokens: int = 2 ** 16 + 2 # The number of input and output tokens (derived from NeuCodec codebook). Should be 2^16 + 2.
+    d_timbre: int = 192 # The dimensionality of the timbre embedding (came from ERes2Net-V2 timbre features). Should be 192.
+    d_token: int = 1024 # The dimensionality of the token embedding (came from NeuCodec token features). Should be 1024.
+    d_fsq: int = 8 # The dimensionality of the finite scalar quantization embedding. Should be 8.
+    n_bins: int = 4 # The number of bins for each dimension (used for Finite Scalar Quantization). Should be 4.
 
     n_pitch: int = 256 # The number of bins for pitch embedding.
     min_pitch: float = 32.7 # The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).
@@ -65,4 +66,5 @@ class VoiceGeneratorModuleConfig:
     n_layers: int = 8 # The number of DiT blocks in the generator.
     dropout: float = 0.2 # The dropout rate for regularization.
 
-    embedding_weight: str = 'checkpoints/codebooks.pt' # The path to the pretrained embedding weights (derived from NeuCodec codebook).
+    fsq_weight: str = 'checkpoints/fsq_weight.pt' # The path to the pretrained FSQ weight (derived from NeuCodec codebook).
+    token_weight: str = 'checkpoints/token_weight.pt' # The path to the pretrained token weights (derived from NeuCodec codebook).
