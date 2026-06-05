@@ -48,6 +48,7 @@ class VoiceGeneratorModuleConfig:
     d_content: int = 512 # The dimensionality of the content embedding (came from VietASR content features). Should be 512.
     d_pitch: int = 32 # The dimensionality of the pitch embedding (after logarithmic embedding).
     d_amplitude: int = 32 # The dimensionality of the amplitude embedding (after logarithmic embedding).
+    d_timbre: int = 192 # The dimensionality of the timbre embedding (came from ERes2Net-V2 timbre features). Should be 192.
     d_token: int = 1024 # The dimensionality of the token embedding (came from NeuCodec token features). Should be 1024.
     d_fsq: int = 8 # The dimensionality of the finite scalar quantization embedding. Should be 8.
     n_bins: int = 4 # The number of bins for each dimension (used for Finite Scalar Quantization). Should be 4.

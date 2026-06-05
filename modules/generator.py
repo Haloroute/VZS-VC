@@ -67,7 +67,7 @@ class VoiceGenerator(nn.Module):
         self.amplitude_embedding = LogEmbedding(n_amplitude, d_amplitude, min_amplitude, max_amplitude)
 
         # Projection layers for input features
-        self.cpa_projection = nn.Linear(d_content + d_pitch + d_amplitude + d_timbre, d_model)
+        self.cpat_projection = nn.Linear(d_content + d_pitch + d_amplitude + d_timbre, d_model)
 
         # Transformer blocks
         self.transformer_blocks = nn.ModuleList([
@@ -111,7 +111,7 @@ class VoiceGenerator(nn.Module):
                 nn.init.zeros_(self.fsq_projection.bias)
 
         # Initialize the parameters of projection layers
-        for linear in [self.cpa_projection, self.token_projection, self.output_projection]:
+        for linear in [self.cpat_projection, self.token_projection, self.output_projection]:
             if isinstance(linear, nn.Linear):
                 nn.init.trunc_normal_(linear.weight, std=std)
                 if linear.bias is not None:
@@ -189,10 +189,10 @@ class VoiceGenerator(nn.Module):
         token_emb: Tensor = torch.where(mask_indices.unsqueeze(-1).bool(), self.mask_token, token_emb) # (N, T, D_token)
         token_emb: Tensor = self.token_projection(token_emb) # (N, T, D_token) -> (N, T, D_model)
 
-        # Step 3: Concatenate content, pitch and amplitude features, and project to d_model dimension.
-        cpa: Tensor = torch.cat([content_interp, pitch_emb, amplitude_emb, timbre.unsqueeze(1).expand(-1, T, -1)], dim=-1) # (N, T, D_content + D_pitch + D_amplitude + D_timbre)
-        cpa_emb: Tensor = self.cpa_projection(cpa) # (N, T, D_content + D_pitch + D_amplitude + D_timbre) -> (N, T, D_model)
-        input: Tensor = token_emb + cpa_emb # (N, T, D_model)
+        # Step 3: Concatenate content, pitch, amplitude and timbre features, and project to d_model dimension.
+        cpat: Tensor = torch.cat([content_interp, pitch_emb, amplitude_emb, timbre.unsqueeze(1).expand(-1, T, -1)], dim=-1) # (N, T, D_content + D_pitch + D_amplitude + D_timbre)
+        cpat_emb: Tensor = self.cpat_projection(cpat) # (N, T, D_content + D_pitch + D_amplitude + D_timbre) -> (N, T, D_model)
+        input: Tensor = token_emb + cpat_emb # (N, T, D_model)
 
         # Step 4: Pass through Transformer blocks with cross-attention to timbre features.
         for block in self.transformer_blocks:
