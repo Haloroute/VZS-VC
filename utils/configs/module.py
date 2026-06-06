@@ -32,30 +32,17 @@ class LocalRMSModuleConfig:
     window_size: int = 960
     hop_size: int = 320
 
-# Configuration for the NeuCodec model used as the codec module
-@dataclass
-class NeuCodecModuleConfig:
-    pretrained_model_name_or_path: str = 'neuphonic/neucodec'
-
-# Configuration for the DistillNeuCodec model used as the distilled codec module (a smaller version of NeuCodec for faster inference)
-@dataclass
-class DistillNeuCodecModuleConfig:
-    pretrained_model_name_or_path: str = 'neuphonic/distill-neucodec'
-
 # Configuration for the Voice Generator model used as the main VC model
 @dataclass
 class VoiceGeneratorModuleConfig:
     d_content: int = 512 # The dimensionality of the content embedding (came from VietASR content features). Should be 512.
     d_pitch: int = 32 # The dimensionality of the pitch embedding (after logarithmic embedding).
     d_amplitude: int = 32 # The dimensionality of the amplitude embedding (after logarithmic embedding).
-    d_timbre: int = 192 # The dimensionality of the timbre embedding (came from ERes2Net-V2 timbre features). Should be 192.
-    d_token: int = 1024 # The dimensionality of the token embedding (came from NeuCodec token features). Should be 1024.
-    d_fsq: int = 8 # The dimensionality of the finite scalar quantization embedding. Should be 8.
-    n_bins: int = 4 # The number of bins for each dimension (used for Finite Scalar Quantization). Should be 4.
 
     n_pitch: int = 256 # The number of bins for pitch embedding.
     min_pitch: float = 32.7 # The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).
     max_pitch: float = 1244.5 # The maximum value for pitch embedding (should be a positive value). Should be around 1244.5 (D#5 note).
+
     n_amplitude: int = 256 # The number of bins for amplitude embedding.
     min_amplitude: float = 0.01 # The minimum value for amplitude embedding (should be a positive value). Should be around 0.01.
     max_amplitude: float = 0.85 # The maximum value for amplitude embedding (should be a positive value). Should be around 0.85.
@@ -66,5 +53,15 @@ class VoiceGeneratorModuleConfig:
     n_layers: int = 8 # The number of DiT blocks in the generator.
     dropout: float = 0.2 # The dropout rate for regularization.
 
-    fsq_weight: str = 'checkpoints/fsq_weight.pt' # The path to the pretrained FSQ weight (derived from NeuCodec codebook).
-    token_weight: str = 'checkpoints/token_weight.pt' # The path to the pretrained token weights (derived from NeuCodec codebook).
+    sample_rate: int = 24000 # The sampling rate for the input and output Mel-spectrograms (should match the sampling rate used for the Mel-spectrogram features in the dataset, which is 24000).
+    n_fft: int = 1024 # The size of the FFT for computing the Mel-spectrogram.
+    hop_length: int = 240 # The hop length (frame shift) for computing the Mel-spectrogram (should be chosen to achieve the desired temporal resolution, e.g., 240 for 100Hz at 24kHz).
+    n_mel_bins: int = 100 # The number of Mel frequency bins in the intermediate spectrogram (should match the number of bins used for the Vocoder, which is 100).
+
+# Configuration for the Discriminator model used as the discriminator in the VC system
+@dataclass
+class VoiceDiscriminatorModuleConfig:
+    d_model: int = 768 # The dimensionality of the discriminator model.
+    n_layers: int = 7 # The number of convolutional layers in the discriminator model.
+    dropout: float = 0.2 # The dropout rate for regularization in the discriminator model.
+    n_mel_bins: int = 100 # The number of Mel frequency bins in the input features for the discriminator (should match the n_mel_bins used in the generator and dataset).

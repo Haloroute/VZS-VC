@@ -5,23 +5,21 @@ from dataclasses import asdict
 from safetensors.torch import load_model
 
 from .configs import (
-    DistillNeuCodecModuleConfig,
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,
-    NeuCodecModuleConfig,
+    VoiceDiscriminatorModuleConfig,
     VoiceGeneratorModuleConfig,
     Zipformer2ModuleConfig
 )
 from modules import (
     Conv2dSubsampling,
-    DistillNeuCodec,
     EncoderModel,
     ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
-    NeuCodec,
     VoiceGenerator,
+    VoiceDiscriminator,
     Zipformer2
 )
 
@@ -108,32 +106,6 @@ def load_amplitude_encoder(device: torch.device, config: LocalRMSModuleConfig = 
     return model
 
 
-# Functions to load module for neural codec (NeuCodec)
-def load_codec(device: torch.device, config: NeuCodecModuleConfig = None) -> NeuCodec:
-    # If no config is provided, use the default one
-    if config is None:
-        config = NeuCodecModuleConfig()
-
-    model = NeuCodec.from_pretrained(**asdict(config))
-
-    # Set the model to evaluation mode
-    model.to(device).eval()
-    return model
-
-
-# Functions to load module for distill neural codec (DistillNeuCodec)
-def load_distill_codec(device: torch.device, config: DistillNeuCodecModuleConfig = None) -> DistillNeuCodec:
-    # If no config is provided, use the default one
-    if config is None:
-        config = DistillNeuCodecModuleConfig()
-
-    model = DistillNeuCodec.from_pretrained(**asdict(config))
-
-    # Set the model to evaluation mode
-    model.to(device).eval()
-    return model
-
-
 # Functions to load module for the main VC model (VoiceGenerator)
 def load_generator(device: torch.device, config: VoiceGeneratorModuleConfig = None) -> VoiceGenerator:
     # If no config is provided, use the default one
@@ -141,6 +113,19 @@ def load_generator(device: torch.device, config: VoiceGeneratorModuleConfig = No
         config = VoiceGeneratorModuleConfig()
 
     model = VoiceGenerator(**asdict(config))
+
+    # Set the model to evaluation mode
+    model.to(device).eval()
+    return model
+
+
+# Functions to load module for the discriminator model
+def load_discriminator(device: torch.device, config: VoiceDiscriminatorModuleConfig = None) -> VoiceDiscriminator:
+    # If no config is provided, use the default one
+    if config is None:
+        config = VoiceDiscriminatorModuleConfig()
+
+    model = VoiceDiscriminator(**asdict(config))
 
     # Set the model to evaluation mode
     model.to(device).eval()
