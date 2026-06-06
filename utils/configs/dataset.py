@@ -30,7 +30,7 @@ class VieNeuTTSPerturbationConfig:
 @dataclass
 class VieNeuTTSPerturbedDatasetConfig:
     path: str = "Haloroute/VieNeu-TTS-140h-perturbed"  # Default dataset name
-    train_size: float = 0.9 # Proportion of data to use for training (rest will be used for validation)
+    train_size: float = 0.95 # Proportion of data to use for training (rest will be used for validation)
     perturbed_audio_column: str = "perturbed_audio" # Column name for the perturbed audio in the new dataset
     seed: int = 42 # Random seed for reproducibility when splitting the dataset
 
@@ -45,9 +45,6 @@ class VieNeuTTSPreprocessedDatasetConfig:
     content_column: str = "content_embedding" # Column name for content embedding in the preprocessed dataset
     pitch_column: str = "pitch_embedding" # Column name for pitch embedding in the preprocessed dataset
     timbre_column: str = "timbre_embedding" # Column name for timbre embedding in the preprocessed dataset
-    code_column: str = "code_embedding" # Column name for code embedding in the preprocessed dataset
+    audio_column: str = "audio" # Column name for raw audio in the preprocessed dataset
 
-    min_mask_ration: float = 0.1 # Minimum ratio of the sequence to be masked for data augmentation during training
-    max_mask_ration: float = 0.7 # Maximum ratio of the sequence to be masked for data augmentation during training
-    ignore_token: int = -100 # The padding value that should be ignored in the target sequences.
     seed: int = 42 # Random seed for reproducibility when loading the preprocessed dataset
