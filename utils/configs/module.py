@@ -65,3 +65,8 @@ class VoiceDiscriminatorModuleConfig:
     n_layers: int = 6 # The number of convolutional layers in the discriminator model.
     dropout: float = 0.2 # The dropout rate for regularization in the discriminator model.
     n_mel_bins: int = 100 # The number of Mel frequency bins in the input features for the discriminator (should match the n_mel_bins used in the generator and dataset).
+
+# Configuration for the BigVGAN model used as the vocoder in the VC system
+@dataclass
+class BigVGANModuleConfig:
+    pretrained_model_name_or_path: str = 'nvidia/bigvgan_v2_24khz_100band_256x' # The name or path of the pretrained BigVGAN model to use as the vocoder (should be compatible with the n_mel_bins used in the generator, which is 100).

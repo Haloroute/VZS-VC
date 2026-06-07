@@ -5,6 +5,7 @@ from dataclasses import asdict
 from safetensors.torch import load_model
 
 from .configs import (
+    BigVGANModuleConfig,
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,
@@ -13,6 +14,7 @@ from .configs import (
     Zipformer2ModuleConfig
 )
 from modules import (
+    BigVGAN,
     Conv2dSubsampling,
     EncoderModel,
     ERes2NetV2,
@@ -128,5 +130,19 @@ def load_discriminator(device: torch.device, config: VoiceDiscriminatorModuleCon
     model = VoiceDiscriminator(**asdict(config))
 
     # Set the model to evaluation mode
+    model.to(device).eval()
+    return model
+
+
+# Functions to load the BigVGAN vocoder
+def load_vocoder(device: torch.device, config: BigVGANModuleConfig = None) -> BigVGAN:
+    # If no config is provided, use the default one
+    if config is None:
+        config = BigVGANModuleConfig()
+
+    model = BigVGAN.from_pretrained(**asdict(config))
+
+    # Set the model to evaluation mode
+    model.remove_weight_norm()
     model.to(device).eval()
     return model

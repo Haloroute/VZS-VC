@@ -8,3 +8,4 @@ from .loss import DiscriminatorLoss, GeneratorLoss
 from .pitch import FCPE
 from .submodules import LogEmbedding
 from .timbre import ERes2NetV2
+from .vocoder import BigVGAN
