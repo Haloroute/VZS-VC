@@ -61,7 +61,7 @@ class VoiceGeneratorModuleConfig:
 # Configuration for the Discriminator model used as the discriminator in the VC system
 @dataclass
 class VoiceDiscriminatorModuleConfig:
-    d_model: int = 768 # The dimensionality of the discriminator model.
-    n_layers: int = 7 # The number of convolutional layers in the discriminator model.
+    d_model: int = 512 # The dimensionality of the discriminator model.
+    n_layers: int = 6 # The number of convolutional layers in the discriminator model.
     dropout: float = 0.2 # The dropout rate for regularization in the discriminator model.
     n_mel_bins: int = 100 # The number of Mel frequency bins in the input features for the discriminator (should match the n_mel_bins used in the generator and dataset).
