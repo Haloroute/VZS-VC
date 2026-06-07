@@ -316,8 +316,10 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
             # Set the description of the progress bar to show the current average loss
             t.set_postfix({
-                "gen_loss": f"{gen_loss:.5f}",
-                "dis_loss": f"{dis_loss:.5f}"
+                "gen": f"{gen_loss:.5f}",
+                "dis": f"{dis_loss:.5f}",
+                "avg_gen": f"{total_gen_loss / (total_samples + 1e-8):.5f}",
+                "avg_dis": f"{total_dis_loss / (total_samples + 1e-8):.5f}"
             })
 
         # Calculate and print the average training loss for this epoch
@@ -378,8 +380,10 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
                     # Set the description of the progress bar to show the current average loss
                     t.set_postfix({
-                        "gen_loss": f"{gen_loss:.5f}",
-                        "dis_loss": f"{dis_loss:.5f}",
+                        "gen": f"{gen_loss:.5f}",
+                        "dis": f"{dis_loss:.5f}",
+                        "avg_gen": f"{total_gen_loss / (total_samples + 1e-8):.5f}",
+                        "avg_dis": f"{total_dis_loss / (total_samples + 1e-8):.5f}"
                     })
 
             # Calculate and print the average validation loss for this epoch

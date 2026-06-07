@@ -63,7 +63,7 @@ def collate_fn(
     mel_list, mask_indices_list, mel_lengths = [], [], []
     for minibatch in batch:
         # Lấy audio từ batch
-        audio_samples: AudioSamples = WavDecoder(minibatch[dataset_config.audio_column]).get_all_samples()
+        audio_samples: AudioSamples = WavDecoder(minibatch[dataset_config.audio_column]['bytes']).get_all_samples()
         audio: Tensor = audio_samples.data.squeeze(0)  # (1, L) -> (L,)
         
         # 1. Truncation: Đảm bảo độ dài chia hết hoàn toàn cho hop_length * 2

@@ -2,7 +2,7 @@
 import torch.nn as nn
 
 from torch import Tensor
-from torch.nn.utils import weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 
 
 # Discriminator module for VZS-VC
@@ -43,6 +43,8 @@ class VoiceDiscriminator(nn.Module):
 
         # Final pointwise convolution to score each frame independently
         self.final_layer = weight_norm(nn.Conv1d(d_model, 1, kernel_size=1))
+
+        self.init_weights()
 
     def init_weights(self, std: float = 0.02):
         """
