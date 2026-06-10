@@ -15,7 +15,6 @@ from modules import (
     ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
-    NeuCodec
 )
 from utils.audio import dsp_perturbate
 from utils.configs import (
@@ -26,7 +25,6 @@ from utils.configs import (
 )
 from utils.modules import (
     load_amplitude_encoder,
-    load_codec,
     load_content_encoder,
     load_pitch_encoder,
     load_timbre_encoder
@@ -114,7 +112,6 @@ def extract_embeddings():
     # Load the pre-trained modules
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amplitude_encoder: LocalRMSAmplitude = load_amplitude_encoder(device)
-    codec: NeuCodec = load_codec(device)
     content_encoder: EncoderModel = load_content_encoder(device)
     pitch_encoder: FCPE = load_pitch_encoder(device)
     timbre_encoder: ERes2NetV2 = load_timbre_encoder(device)
@@ -158,14 +155,12 @@ def extract_embeddings():
             f_content = executor.submit(inference_fn, content_encoder.inference, perturbed_audio_tensor, streams[1])
             f_pitch = executor.submit(inference_fn, pitch_encoder.inference, original_audio_tensor, streams[2])
             f_timbre = executor.submit(inference_fn, timbre_encoder.inference, original_audio_tensor, streams[3])
-            f_codec = executor.submit(inference_fn, codec.encode_code, original_audio_tensor, streams[4])
 
             # Wait for all encoders to finish and get the results
             amplitude_embedding: Tensor = f_amplitude.result() # (1, T)
             content_embedding: Tensor = f_content.result() # (1, T', D_content)
             pitch_embedding: Tensor = f_pitch.result() # (1, T)
             timbre_embedding: Tensor = f_timbre.result() # (1, D_timbre)
-            code_embedding: Tensor = f_codec.result() # (1, T)
             torch.cuda.synchronize() # Ensure all streams have finished processing
 
             # Validate that the extracted embeddings do not contain NaN values before yielding the sample
@@ -177,8 +172,6 @@ def extract_embeddings():
                 raise ValueError(f"Pitch embedding contains NaN values for sample at index {idx}.")
             if timbre_embedding.isnan().any():
                 raise ValueError(f"Timbre embedding contains NaN values for sample at index {idx}.")
-            if code_embedding.isnan().any():
-                raise ValueError(f"Code embedding contains NaN values for sample at index {idx}.")
 
             # Build the new yielded dictionary, excluding un-serializable audio columns
             new_sample = {
@@ -191,7 +184,6 @@ def extract_embeddings():
             new_sample[preprocessed_dataset_config.content_column] = content_embedding.squeeze(0).numpy(force=True)
             new_sample[preprocessed_dataset_config.pitch_column] = pitch_embedding.squeeze(0).numpy(force=True)
             new_sample[preprocessed_dataset_config.timbre_column] = timbre_embedding.squeeze(0).numpy(force=True)
-            new_sample[preprocessed_dataset_config.code_column] = code_embedding.squeeze(0).numpy(force=True)
 
             return new_sample
         except Exception as e:
@@ -200,19 +192,18 @@ def extract_embeddings():
 
     # Define the features for the new dataset, which include the original features from the perturbed dataset plus new features for each of the extracted embeddings.
     preprocessed_features = Features({
-        **{k: v for k, v in perturbed_datasets["train"].features.items() if k != perturbed_dataset_config.perturbed_audio_column and k != dataset_config.audio_column}, # Original features from perturbed dataset
+        **{k: v for k, v in perturbed_datasets["train"].features.items() if k != perturbed_dataset_config.perturbed_audio_column}, # Original features from perturbed dataset
         preprocessed_dataset_config.amplitude_column: Sequence(Value("float32")), # New feature for amplitude embedding
         preprocessed_dataset_config.content_column: Array2D(shape=(None, 512), dtype="float32"), # New feature for content embedding
         preprocessed_dataset_config.pitch_column: Sequence(Value("float32")), # New feature for pitch embedding
         preprocessed_dataset_config.timbre_column: Sequence(Value("float32"), length=192), # New feature for timbre embedding
-        preprocessed_dataset_config.code_column: Sequence(Value("int64")), # New feature for code embedding
     })
 
     # Create a new dataset with the extracted embeddings and the same features as the perturbed dataset, plus new features for the embeddings.
     preprocessed_dataset: DatasetDict = perturbed_datasets.map(
         embedding_extraction_fn,
         with_indices=True,
-        remove_columns=[dataset_config.audio_column, perturbed_dataset_config.perturbed_audio_column],
+        remove_columns=[perturbed_dataset_config.perturbed_audio_column],
         features=preprocessed_features,
         desc="Extracting embeddings from perturbed dataset"
     )

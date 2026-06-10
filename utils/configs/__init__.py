@@ -11,11 +11,11 @@ from .implementation import (
     ValidationConfig
 )
 from .module import (
-    DistillNeuCodecModuleConfig,
+    BigVGANModuleConfig,
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,
-    NeuCodecModuleConfig,
     Zipformer2ModuleConfig,
+    VoiceDiscriminatorModuleConfig,
     VoiceGeneratorModuleConfig
 )

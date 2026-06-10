@@ -1,35 +1,40 @@
 # Utilities for dataset handling
-import torch
+from sympy import content
+import librosa, torch
+import torch.nn.functional as F
 
 from tensordict import TensorDict
 from torch import Tensor
+from torchcodec import AudioSamples
+from torchcodec.decoders import WavDecoder
 from torch.nn.utils.rnn import pad_sequence
 
-from .configs import VieNeuTTSPreprocessedDatasetConfig, VoiceGeneratorModuleConfig
-
-
-# Function to decode token codes from 1D (T,) to multi-dimensional (T, D_fsq) based on n_bins
-def decode_fsq_code(code: torch.Tensor, n_bins: int, d_fsq: int) -> torch.Tensor:
-    """
-    Decompose token codes from 1D (T,) to multi-dimensional (T, D_fsq) based on n_bins.
-    For example with n_bins=4: 100 -> [0, 1, 2, 1, 0, 0, 0, 0]
-    """
-    powers = torch.pow(n_bins, torch.arange(d_fsq, device=code.device))
-    return (code.unsqueeze(-1) // powers) % n_bins
+from .configs import TrainConfig, VieNeuTTSPreprocessedDatasetConfig, VoiceGeneratorModuleConfig
 
 
 # Custom collate function to handle batches of dictionaries
 def collate_fn(
     batch: list[dict],
     dataset_config: VieNeuTTSPreprocessedDatasetConfig,
+    train_config: TrainConfig,
     model_config: VoiceGeneratorModuleConfig
 ) -> TensorDict:
     """
-    Hàm collate tùy chỉnh xử lý đệm dữ liệu đầu vào lên bội số của 32.
+    Collate function to process a batch of data samples (dictionaries) into a single TensorDict with proper padding and masking.
     """
     N = len(batch)
 
-    def process_feature(column_name: str, padding_value: float = 0.0):
+    def process_feature(column_name: str, padding_value: float = 0.0) -> tuple[Tensor, Tensor]:
+        """
+        Helper function to extract a specific feature from the batch, pad it, and return the padded tensor along with the original lengths.
+
+        Args:
+            column_name (str): The key in the batch dictionaries corresponding to the feature to be processed
+            padding_value (float): The value to use for padding shorter sequences (default is 0.0)
+
+        Returns:
+            tuple[Tensor, Tensor]: The padded tensor and the original lengths.
+        """
         # Trích xuất list tensor từ batch
         t_list = [minibatch[column_name] for minibatch in batch]
 
@@ -41,53 +46,89 @@ def collate_fn(
         return padded, lengths
 
     # Trích xuất và đệm toàn bộ các đặc trưng
-    content_padded, content_length = process_feature(dataset_config.content_column)
+    content_padded, content_lengths = process_feature(dataset_config.content_column)
     amplitude_padded, _ = process_feature(dataset_config.amplitude_column)
     pitch_padded, _ = process_feature(dataset_config.pitch_column)
     timbre_padded, _ = process_feature(dataset_config.timbre_column)
 
-    # Xử lý riêng biệt đối với token và target
-    token_list, mask_indices_list, target_list, token_length = [], [], [], []
+    # Khởi tạo tham số cho việc xử lý audio (Mel-spectrogram và masking)
+    window = torch.hann_window(model_config.n_fft)
+    mel_basis = librosa.filters.mel(
+        sr=24000,
+        n_fft=model_config.n_fft,
+        n_mels=model_config.n_mel_bins
+    )
+    mel_basis_tensor = torch.from_numpy(mel_basis).float()
 
+    # Xử lý riêng đối với audio
+    mel_list, mask_indices_list, mel_lengths = [], [], []
     for minibatch in batch:
-        code: Tensor = minibatch[dataset_config.code_column] # (T,)
-        T = code.shape[0]
+        # Lấy audio từ batch
+        audio_samples: AudioSamples = WavDecoder(minibatch[dataset_config.audio_column]['bytes']).get_all_samples()
+        audio: Tensor = audio_samples.data.squeeze(0)  # (1, L) -> (L,)
+        
+        # 1. Truncation: Đảm bảo độ dài chia hết hoàn toàn cho hop_length * 2
+        L = audio.shape[0]
+        valid_length = (L // (model_config.hop_length * 2)) * (model_config.hop_length * 2)
+        audio_clean = audio[:valid_length]
 
-        # Sample min_mask_ration <= mask_ratio <= max_mask_ration
-        mask_ratio = torch.rand(1).item() * (dataset_config.max_mask_ration - dataset_config.min_mask_ration) + dataset_config.min_mask_ration
+        # 2. Padding: Tính toán padding chính xác cho center=False
+        pad_amount = model_config.n_fft - model_config.hop_length
+        left_pad = pad_amount // 2
+        right_pad = pad_amount - left_pad
+        audio_padded = F.pad(audio_clean, (left_pad, right_pad), mode='constant', value=0.0) # (L_padded,)
+
+        # 3. Native STFT Extraction
+        stft_complex = torch.stft(
+            audio_padded,
+            n_fft=model_config.n_fft,
+            hop_length=model_config.hop_length,
+            win_length=model_config.n_fft,
+            window=window,
+            center=False,
+            normalized=False,
+            return_complex=True
+        ) # Shape: (n_fft//2 + 1, 2T)
+
+        # 4. Magnitude to Mel
+        magnitudes = torch.abs(stft_complex) # (n_fft//2 + 1, 2T)
+        mel = torch.matmul(mel_basis_tensor, magnitudes) # (n_mel_bins, n_fft//2 + 1) @ (n_fft//2 + 1, 2T) -> (n_mel_bins, 2T)
+        mel = torch.log(torch.clamp(mel, min=1e-5))
+
+        # Đưa về shape (2T, n_mel_bins) để đưa vào pad_sequence
+        mel = mel.transpose(0, 1)
+
+        # Tính T tương ứng với 50Hz để sinh mask
+        double_T = mel.shape[0]
+        T = double_T // 2
+
+        # Sample min_mask_ratio <= mask_ratio <= max_mask_ratio
+        mask_ratio = torch.rand(1).item() * (train_config.mask_ratio[1] - train_config.mask_ratio[0]) + train_config.mask_ratio[0]
         mask_len = max(int(T * mask_ratio), 1)
 
         start_idx = torch.randint(0, T - mask_len + 1, (1,)).item() if T >= mask_len else 0
-        mask_indices = torch.zeros(T, dtype=torch.bool) # (T,)
+        mask_indices = torch.zeros(T, dtype=torch.bool) # (T,) Chú ý: mask sinh trên không gian T (50Hz)
         mask_indices[start_idx:start_idx + mask_len] = True
 
-        target = code.clone() # (T,)
-        target = decode_fsq_code(target, model_config.n_bins, model_config.d_fsq) # (T, D_fsq)
-        target[~mask_indices.unsqueeze(-1).expand(-1, model_config.d_fsq)] = dataset_config.ignore_token # Chỉ giữ lại target cho phần bị mask
-
-        token_list.append(code)
-        mask_indices_list.append(mask_indices)
-        target_list.append(target)
-        token_length.append(T)
-
-    # Chuyển token_length sang tensor
-    token_length = torch.tensor(token_length, dtype=torch.long) # (N,)
+        # Append results to the lists
+        mel_list.append(mel) # (2T, n_mel_bins)
+        mask_indices_list.append(mask_indices) # (T,)
+        mel_lengths.append(T) # Lưu chiều dài T để sinh mask đúng sau này
 
     # Đệm list token, mask_indices và target
-    token_padded = pad_sequence(token_list, batch_first=True, padding_value=0) # (N, T)
+    mel_padded = pad_sequence(mel_list, batch_first=True, padding_value=0) # (N, 2T, n_mel_bins)
     mask_indices_padded = pad_sequence(mask_indices_list, batch_first=True, padding_value=False) # (N, T)
-    target_padded = pad_sequence(target_list, batch_first=True, padding_value=dataset_config.ignore_token) # (N, T, D_fsq)
+    mel_lengths = torch.tensor(mel_lengths, dtype=torch.long) # (N,)
 
     # Đóng gói vào TensorDict
     return TensorDict({
-        'content': content_padded, # (N, T', D_content)
-        'pitch': pitch_padded, # (N, T)
-        'amplitude': amplitude_padded, # (N, T)
-        'timbre': timbre_padded, # (N, D_timbre)
-        'token': token_padded, # (N, T)
+        "content": content_padded, # (N, T', D_content)
+        "pitch": pitch_padded, # (N, T)
+        "amplitude": amplitude_padded, # (N, T)
+        "timbre": timbre_padded, # (N, D_timbre)
+        "mel": mel_padded, # (N, 2T, n_mel_bins)
 
-        'mask_indices': mask_indices_padded, # (N, T)
-        'content_length': content_length, # (N,)
-        'token_length': token_length, # (N,)
-        'target': target_padded, # (N, T, D_fsq)
+        "mask_indices": mask_indices_padded, # (N, T)
+        "content_length": content_lengths, # (N,)
+        "token_length": mel_lengths, # (N,)
     }, batch_size=[N])

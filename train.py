@@ -1,8 +1,6 @@
 # Main training loop
 import datasets, datetime, math, os, random, torch, wandb
-
 import numpy as np
-import torch.nn as nn
 
 from dataclasses import asdict
 from datasets import DatasetBuilder
@@ -17,7 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
-from modules import VoiceGenerator
+from modules import DiscriminatorLoss, GeneratorLoss, VoiceDiscriminator, VoiceGenerator
 from utils.configs import (
     TrainConfig,
     ValidationConfig,
@@ -26,8 +24,7 @@ from utils.configs import (
 )
 from utils.dataset import collate_fn
 from utils.logger import load_checkpoint, save_checkpoint
-from utils.metrics import calculate_accuracy
-from utils.modules import load_generator
+from utils.modules import load_discriminator, load_generator
 
 
 # Train the model from scratch using the preprocessed dataset
@@ -100,7 +97,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     print(f"Number of validation samples: {n_val_samples}")
 
     # Create DataLoaders for training and validation
-    collate_fn_wrapper = partial(collate_fn, dataset_config=dataset_config, model_config=model_config)
+    collate_fn_wrapper = partial(collate_fn, dataset_config=dataset_config, train_config=train_config, model_config=model_config)
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_config.batch_size,
@@ -121,25 +118,50 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
     # Create the model and load the pretrained modules
     model: VoiceGenerator = load_generator(train_config.device)
+    discriminator: VoiceDiscriminator = load_discriminator(train_config.device)
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=train_config.ema_decay))
 
     print("Model loaded successfully.")
     print(f"Model parameters count: {sum(p.numel() for p in model.parameters())}")
 
-    # Setup the loss function, optimizer, scaler, random seed, etc. for training
-    loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
-    optimizer = AdamW(
+    # Setup the loss function for the generator and discriminator
+    gen_loss_fn = GeneratorLoss(
+        lambda_recon=train_config.lambda_recon,
+        lambda_adv=train_config.lambda_adv,
+        lambda_fm=train_config.lambda_fm
+    )
+    dis_loss_fn = DiscriminatorLoss()
+
+    # Setup the optimizers for the generator and discriminator
+    dis_optimizer = AdamW(
+        discriminator.parameters(),
+        lr=train_config.lr,
+        betas=train_config.beta,
+        weight_decay=train_config.weight_decay
+    )
+    gen_optimizer = AdamW(
         model.parameters(),
         lr=train_config.lr,
         betas=train_config.beta,
         weight_decay=train_config.weight_decay
     )
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
+
+    # Setup the learning rate schedulers for the generator and discriminator
+    dis_scheduler = get_cosine_schedule_with_warmup(
+        dis_optimizer,
         num_warmup_steps=train_config.n_warmup_epochs,
         num_training_steps=train_config.n_epochs
     )
-    scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
+    gen_scheduler = get_cosine_schedule_with_warmup(
+        gen_optimizer,
+        num_warmup_steps=train_config.n_warmup_epochs,
+        num_training_steps=train_config.n_epochs
+    )
+
+    # Setup the GradScaler for mixed precision training (use fp16 for NVIDIA GPUs, bf16 for AMD GPUs, and disable for CPU)
+    gen_scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
+    dis_scaler = GradScaler(device=train_config.device, enabled=train_config.amp == torch.float16) # Use GradScaler for mixed precision training (fp16) and disable it for bf16 or fp32
+
     torch.manual_seed(train_config.seed)
     np.random.seed(train_config.seed)
     random.seed(train_config.seed)
@@ -149,11 +171,12 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     # Load checkpoint if a path is provided
     if checkpoint_path is not None:
         print(f"Loading checkpoint from {checkpoint_path}...")
-        _, start_epoch, start_loss, start_accuracy = load_checkpoint(
+        _, start_epoch = load_checkpoint(
             checkpoint_path,
-            model, ema_model, optimizer, scheduler, scaler
+            model, ema_model, discriminator,
+            gen_optimizer, dis_optimizer, gen_scheduler, dis_scheduler, gen_scaler, dis_scaler
         )
-        print(f"Checkpoint loaded successfully. Resuming from epoch {start_epoch}, loss {start_loss}, accuracy {start_accuracy}%.")
+        print(f"Checkpoint loaded successfully. Resuming from epoch {start_epoch}.")
 
         # # Update the learning rate of the optimizer
         # for param_group in optimizer.param_groups:
@@ -172,6 +195,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
     # Compile the model with torch.compile for potential speed improvements (optional, can be disabled if it causes issues)
     if train_config.compiled:
         model = torch.compile(model, dynamic=True, fullgraph=True)
+        discriminator = torch.compile(discriminator, dynamic=True, fullgraph=True)
         print("Enabled torch.compile for the model.")
     if validation_config.compiled:
         ema_model.module = torch.compile(ema_model.module, dynamic=True, fullgraph=True)
@@ -188,7 +212,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
         print(f"Epoch {epoch}/{train_config.n_epochs}")
         model.train()
         ema_model.train()
-        total_loss, total_corrects, total_samples = 0.0, 0, 0
+        total_gen_loss, total_dis_loss, total_samples = 0.0, 0.0, 0
 
         # Iterate over the training DataLoader with a progress bar
         for i, batch in (t := tqdm(enumerate(train_loader), desc="Training", total=math.ceil(n_train_samples / train_config.batch_size), leave=False)):
@@ -199,121 +223,120 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             # "pitch": pitch_padded, # (N, T)
             # "amplitude": amplitude_padded, # (N, T)
             # "timbre": timbre_padded, # (N, D_timbre)
-            # "token": token_padded, # (N, T)
+            # "mel": mel_padded, # (N, 2T, n_mel_bins)
 
             # "mask_indices": mask_indices_padded, # (N, T)
-            # "content_length": content_length, # (N,)
-            # 'token_length': token_length, # (N,)
-            # 'target': target_padded, # (N, T, D_fsq)
+            # "content_length": content_lengths, # (N,)
+            # "token_length": mel_lengths, # (N,)
 
+            # 1. Train the discriminator on real and generated samples
             # Zero the gradients
-            optimizer.zero_grad()
+            dis_optimizer.zero_grad()
 
             # Use autocast for mixed precision training if enabled in the configuration (fp16/bf16) and disable it for fp32
             with autocast(device_type=train_config.device, dtype=train_config.amp, enabled=train_config.amp != torch.float32):
-                # Forward pass and loss computation
+                # Forward pass for the generator (use the generator's output as input to the discriminator)
+                with torch.no_grad():
+                    output: Tensor = model(
+                        content=batch['content'],
+                        pitch=batch['pitch'],
+                        amplitude=batch['amplitude'],
+                        timbre=batch['timbre'],
+                        mel=batch['mel'],
+
+                        mask_indices=batch['mask_indices'],
+                        content_length=batch['content_length'],
+                        token_length=batch['token_length'],
+                    )
+
+                # Forward pass for the discriminator
+                dis_gen, _ = discriminator(output.detach()) # (N, T), list of feature maps [(N, D, T), ...]
+                dis_target, _ = discriminator(batch['mel']) # (N, T), list of feature maps [(N, D, T), ...]
+
+                # Discriminator loss function
+                dis_loss: Tensor = dis_loss_fn(
+                    dis_gen=dis_gen,
+                    dis_target=dis_target,
+                    mask_indices=batch['mask_indices'],
+                    token_length=batch['token_length']
+                )
+
+            # Backpropagation and optimization step for the discriminator
+            dis_scaler.scale(dis_loss).backward()
+            dis_scaler.unscale_(dis_optimizer)
+            clip_grad_norm_(discriminator.parameters(), max_norm=train_config.clip_grad_norm)
+            dis_scaler.step(dis_optimizer)
+            dis_scaler.update()
+
+            # 2. Train the generator to fool the discriminator and reconstruct the target Mel-spectrogram
+            # Zero the gradients
+            gen_optimizer.zero_grad()
+
+            # Use autocast for mixed precision training if enabled in the configuration (fp16/bf16) and disable it for fp32
+            with autocast(device_type=train_config.device, dtype=train_config.amp, enabled=train_config.amp != torch.float32):
+                # Forward pass for the generator
                 output: Tensor = model(
                     content=batch['content'],
                     pitch=batch['pitch'],
                     amplitude=batch['amplitude'],
                     timbre=batch['timbre'],
-                    token=batch['token'],
+                    mel=batch['mel'],
 
                     mask_indices=batch['mask_indices'],
                     content_length=batch['content_length'],
                     token_length=batch['token_length'],
-                ) # (N, N_tokens, T, D_fsq)
+                ) # (N, 2T, n_mel_bins)
 
-                # CrossEntropyLoss expects (N, N_bins, T, D_fsq) for the input and (N, T, D_fsq) for the target
-                loss: Tensor = loss_fn(output, batch['target'])
-                n_corrects, n_samples = calculate_accuracy(output, batch['target'], ignore_index=dataset_config.ignore_token)
+                # Forward pass for the discriminator on the generator's output and the real target Mel-spectrogram
+                dis_gen, fmap_gen = discriminator(output) # (N, T), list of feature maps [(N, D, T), ...]
+                with torch.no_grad():
+                    _, fmap_target = discriminator(batch['mel']) # (N, T), list of feature maps [(N, D, T), ...]
 
-            # Backpropagation and optimization step
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+                # Generator loss function (reconstruction + adversarial + feature matching)
+                gen_loss: Tensor = gen_loss_fn(
+                    target=batch['mel'],
+                    output=output,
+                    dis_gen=dis_gen,
+                    fmap_gen=fmap_gen,
+                    fmap_target=fmap_target,
+                    mask_indices=batch['mask_indices']
+                )
+
+            # Backpropagation and optimization step for the generator
+            gen_scaler.scale(gen_loss).backward()
+            gen_scaler.unscale_(gen_optimizer)
             clip_grad_norm_(model.parameters(), max_norm=train_config.clip_grad_norm) # Gradient clipping to prevent exploding gradients
-            scaler.step(optimizer)
-            scaler.update() 
+            gen_scaler.step(gen_optimizer)
+            gen_scaler.update()
+
+            # Update the EMA model with the current generator parameters
             ema_model.update_parameters(model)
 
-            # Accumulate the total loss for this epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-            loss = loss.item()
-            total_loss += loss * n_samples
-            total_corrects += n_corrects
-            total_samples += n_samples
+            # Accumulate the total loss for this epoch
+            gen_loss, dis_loss = gen_loss.item(), dis_loss.item()
+            total_gen_loss, total_dis_loss = total_gen_loss + gen_loss, total_dis_loss + dis_loss
+            total_samples += 1
 
             # Set the description of the progress bar to show the current average loss
             t.set_postfix({
-                "loss": f"{loss:.5f}",
-                "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
-                "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
-                "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
+                "gen": f"{gen_loss:.5f}",
+                "dis": f"{dis_loss:.5f}",
+                "avg_gen": f"{total_gen_loss / (total_samples + 1e-8):.5f}",
+                "avg_dis": f"{total_dis_loss / (total_samples + 1e-8):.5f}"
             })
 
         # Calculate and print the average training loss for this epoch
-        avg_train_loss = total_loss / (total_samples + 1e-8)
-        avg_train_acc = total_corrects / (total_samples + 1e-8) * 100
+        avg_gen_loss = total_gen_loss / (total_samples + 1e-8)
+        avg_dis_loss = total_dis_loss / (total_samples + 1e-8)
 
-        print(f"Average training loss: {avg_train_loss:.5f}")
-        print(f"Average training accuracy: {avg_train_acc:.3f}%")
-        run.log({"epoch": epoch, "train/loss": avg_train_loss, "train/accuracy": avg_train_acc})
+        print(f"Average training loss: {avg_gen_loss:.5f} (Generator), {avg_dis_loss:.5f} (Discriminator)")
+        run.log({"epoch": epoch, "train/gen_loss": avg_gen_loss, "train/dis_loss": avg_dis_loss})
 
         # Validation phase (optional, can be done every few epochs to save time)
         if epoch % validation_config.validate_every_n_epochs == 0: # Validate every few epochs
-            # Validation on the original model
-            model.eval()
-            total_loss, total_corrects, total_samples = 0.0, 0, 0
-
-            # Iterate over the validation DataLoader with a progress bar
-            with torch.inference_mode():
-                for i, batch in (t := tqdm(enumerate(val_loader), desc="Validation", total=math.ceil(n_val_samples / validation_config.batch_size), leave=False)):
-                    # Move the batch to the specified device (GPU or CPU)
-                    batch: TensorDict = batch.to(validation_config.device, non_blocking=True)
-
-                    # Use autocast for mixed precision validation if enabled in the configuration (fp16/bf16) and disable it for fp32
-                    with autocast(device_type=validation_config.device, dtype=validation_config.amp, enabled=validation_config.amp != torch.float32):
-                        # Forward pass and loss computation
-                        output: Tensor = model(
-                            content=batch['content'],
-                            pitch=batch['pitch'],
-                            amplitude=batch['amplitude'],
-                            timbre=batch['timbre'],
-                            token=batch['token'],
-
-                            mask_indices=batch['mask_indices'],
-                            content_length=batch['content_length'],
-                            token_length=batch['token_length'],
-                        ) # (N, N_tokens, T, D_fsq)
-
-                        # CrossEntropyLoss expects (N, N_bins, T, D_fsq) for the input and (N, T, D_fsq) for the target
-                        loss: Tensor = loss_fn(output, batch['target'])
-                        n_corrects, n_samples = calculate_accuracy(output, batch['target'], ignore_index=dataset_config.ignore_token)
-
-                    # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                    loss = loss.item()
-                    total_loss += loss * n_samples
-                    total_corrects += n_corrects
-                    total_samples += n_samples
-
-                    # Set the description of the progress bar to show the current average loss
-                    t.set_postfix({
-                        "loss": f"{loss:.5f}",
-                        "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
-                        "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
-                        "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
-                    })
-
-            # Calculate and print the average validation loss for this epoch
-            avg_val_loss = total_loss / (total_samples + 1e-8)
-            avg_val_acc = total_corrects / (total_samples + 1e-8) * 100
-
-            print(f"Average validation loss: {avg_val_loss:.5f}")
-            print(f"Average validation accuracy: {avg_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/orig_loss": avg_val_loss, "val/orig_accuracy": avg_val_acc})
-
             # Validation on EMA model
             ema_model.eval()
-            total_loss, total_corrects, total_samples = 0.0, 0, 0
+            total_gen_loss, total_dis_loss, total_samples = 0.0, 0.0, 0
 
             # Iterate over the validation DataLoader with a progress bar
             with torch.inference_mode():
@@ -323,44 +346,56 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
 
                     # Use autocast for mixed precision validation if enabled in the configuration (fp16/bf16) and disable it for fp32
                     with autocast(device_type=validation_config.device, dtype=validation_config.amp, enabled=validation_config.amp != torch.float32):
-                        # Forward pass and loss computation
+                        # Forward pass for the EMA generator and discriminator
                         output: Tensor = ema_model(
                             content=batch['content'],
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
                             timbre=batch['timbre'],
-                            token=batch['token'],
+                            mel=batch['mel'],
 
                             mask_indices=batch['mask_indices'],
                             content_length=batch['content_length'],
                             token_length=batch['token_length'],
-                        ) # (N, N_tokens, T, D_fsq)
+                        ) # (N, 2T, n_mel_bins)
+                        dis_gen, fmap_gen = discriminator(output) # (N, T), list of feature maps [(N, D, T), ...]                   
+                        dis_target, fmap_target = discriminator(batch['mel']) # (N, T), list of feature maps [(N, D, T), ...]
 
-                        # CrossEntropyLoss expects (N, N_bins, T, D_fsq) for the input and (N, T, D_fsq) for the target
-                        loss: Tensor = loss_fn(output, batch['target'])
-                        n_corrects, n_samples = calculate_accuracy(output, batch['target'], ignore_index=dataset_config.ignore_token)
+                        # Generator loss function (reconstruction + adversarial + feature matching) and discriminator loss function
+                        gen_loss: Tensor = gen_loss_fn(
+                            target=batch['mel'],
+                            output=output,
+                            dis_gen=dis_gen,
+                            fmap_gen=fmap_gen,
+                            fmap_target=fmap_target,
+                            mask_indices=batch['mask_indices']
+                        )
+                        dis_loss: Tensor = dis_loss_fn(
+                            dis_gen=dis_gen,
+                            dis_target=dis_target,
+                            mask_indices=batch['mask_indices'],
+                            token_length=batch['token_length']
+                        )
 
-                    # Accumulate the total loss for this validation epoch (multiply by batch size to get the sum of losses for all samples in the batch)
-                    loss = loss.item()
-                    total_loss += loss * n_samples
-                    total_corrects += n_corrects
-                    total_samples += n_samples
+                    # Accumulate the total loss for this epoch
+                    gen_loss, dis_loss = gen_loss.item(), dis_loss.item()
+                    total_gen_loss, total_dis_loss = total_gen_loss + gen_loss, total_dis_loss + dis_loss
+                    total_samples += 1
 
                     # Set the description of the progress bar to show the current average loss
                     t.set_postfix({
-                        "loss": f"{loss:.5f}",
-                        "acc": f"{n_corrects / (n_samples + 1e-8) * 100:.3f}%",
-                        "avg_loss": f"{total_loss / (total_samples + 1e-8):.5f}",
-                        "avg_acc": f"{total_corrects / (total_samples + 1e-8) * 100:.3f}%"
+                        "gen": f"{gen_loss:.5f}",
+                        "dis": f"{dis_loss:.5f}",
+                        "avg_gen": f"{total_gen_loss / (total_samples + 1e-8):.5f}",
+                        "avg_dis": f"{total_dis_loss / (total_samples + 1e-8):.5f}"
                     })
 
             # Calculate and print the average validation loss for this epoch
-            avg_ema_val_loss = total_loss / (total_samples + 1e-8)
-            avg_ema_val_acc = total_corrects / (total_samples + 1e-8) * 100
+            avg_gen_loss = total_gen_loss / (total_samples + 1e-8)
+            avg_dis_loss = total_dis_loss / (total_samples + 1e-8)
 
-            print(f"Average EMA validation loss: {avg_ema_val_loss:.5f}")
-            print(f"Average EMA validation accuracy: {avg_ema_val_acc:.3f}%")
-            run.log({"epoch": epoch, "val/ema_loss": avg_ema_val_loss, "val/ema_accuracy": avg_ema_val_acc})
+            print(f"Average validation loss: {avg_gen_loss:.5f} (Generator), {avg_dis_loss:.5f} (Discriminator)")
+            run.log({"epoch": epoch, "val/gen_loss": avg_gen_loss, "val/dis_loss": avg_dis_loss})
 
         # Saving phase (save a checkpoint every few epochs)
         if epoch % train_config.save_every_n_epochs == 0:
@@ -370,15 +405,15 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             checkpoint_path = os.path.join(train_config.checkpoint_folder, checkpoint_filename)
             save_checkpoint(
                 checkpoint_path,
-                model, ema_model, optimizer, scheduler, scaler, epoch,
-                loss=avg_train_loss,
-                accuracy=avg_train_acc
+                model, ema_model, discriminator,
+                gen_optimizer, dis_optimizer, gen_scheduler, dis_scheduler, gen_scaler, dis_scaler, epoch
             )
             run.save(checkpoint_path)
             print(f"Checkpoint saved for epoch {epoch}.")
 
-        # Update the learning rate scheduler
-        scheduler.step()
+        # Update the learning rate schedulers
+        gen_scheduler.step()
+        dis_scheduler.step()
 
     # Finish the wandb run after training is complete
     run.finish()

@@ -1,21 +1,18 @@
 # Python dependencies
 # Deep learning libraries
-local_attention
 torch
-torchao
 torchaudio
 torchfcpe
-torchtune
 transformers
-vector_quantize_pytorch
 
 # Data processing libraries
+librosa
 pyworld
 tensordict
 torchcodec
 
 # Utility libraries
-datasets[audio]
+datasets
 huggingface_hub
 safetensors
 tqdm

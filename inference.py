@@ -1,15 +1,18 @@
 # Script for performing zero-shot voice conversion (real-time/offline)
-import os, torch, torchaudio
+import librosa, os, torch, torchaudio
+
+import torch.nn.functional as F
 import torchaudio.functional as F_audio
 
 from torch import Tensor
 from torch.amp import autocast
 
 from modules import (
+    BigVGAN,
     EncoderModel,
+    ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
-    NeuCodec,
     VoiceGenerator
 )
 from utils.configs import (
@@ -19,129 +22,215 @@ from utils.configs import (
 from utils.logger import load_checkpoint
 from utils.modules import (
     load_amplitude_encoder,
-    load_codec,
     load_content_encoder,
     load_generator,
-    load_pitch_encoder
+    load_pitch_encoder,
+    load_timbre_encoder,
+    load_vocoder
 )
 
+def process_mel(audio: Tensor, model_config: VoiceGeneratorModuleConfig) -> Tensor:
+    """
+    Trích xuất Mel-spectrogram y hệt cách thức trong file dataset.py
+    Input: audio tensor (L,)
+    Output: mel tensor (2T, n_mel_bins)
+    """
+    device = audio.device
+    window = torch.hann_window(model_config.n_fft).to(device)
+    mel_basis = librosa.filters.mel(
+        sr=24000,
+        n_fft=model_config.n_fft,
+        n_mels=model_config.n_mel_bins
+    )
+    mel_basis_tensor = torch.from_numpy(mel_basis).float().to(device)
+
+    # 1. Truncation
+    L = audio.shape[0]
+    valid_length = (L // (model_config.hop_length * 2)) * (model_config.hop_length * 2)
+    audio_clean = audio[:valid_length]
+
+    # 2. Padding
+    pad_amount = model_config.n_fft - model_config.hop_length
+    left_pad = pad_amount // 2
+    right_pad = pad_amount - left_pad
+    audio_padded = F.pad(audio_clean, (left_pad, right_pad), mode='constant', value=0.0)
+
+    # 3. Native STFT Extraction
+    stft_complex = torch.stft(
+        audio_padded,
+        n_fft=model_config.n_fft,
+        hop_length=model_config.hop_length,
+        win_length=model_config.n_fft,
+        window=window,
+        center=False,
+        normalized=False,
+        return_complex=True
+    )
+
+    # 4. Magnitude to Mel
+    magnitudes = torch.abs(stft_complex)
+    mel = torch.matmul(mel_basis_tensor, magnitudes)
+    mel = torch.log(torch.clamp(mel, min=1e-5))
+
+    # Đưa về shape (2T, n_mel_bins)
+    mel = mel.transpose(0, 1)
+    return mel
+
+def pad_audio_arrays(audio: Tensor, sr: int, target_mod: int, add_extra_silence: bool) -> Tensor:
+    """
+    Bổ sung khoảng lặng (padding) để số khung hình chia hết cho target_mod (320 hoặc 480).
+    Nếu add_extra_silence = True, bổ sung thêm 0.5s khoảng lặng.
+    """
+    L = audio.shape[-1]
+    rem = L % target_mod
+    pad_len = (target_mod - rem) if rem != 0 else 0
+
+    if add_extra_silence:
+        pad_len += int(0.5 * sr)
+
+    return F.pad(audio, (0, pad_len), mode='constant', value=0.0)
 
 # Function to perform offline zero-shot voice conversion using a trained model
 def inference_offline():
-    # Prompt the user to enter the path to the checkpoint file
-    checkpoint_path = input("Enter the path to the checkpoint file: ")
+    # Nhập đường dẫn checkpoint
+    checkpoint_path = "checkpoints/generator.pth"
+    # checkpoint_path = input("Enter the path to the checkpoint file: ")
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint file not found at path: {checkpoint_path}")
 
-    # Load the configurations
+    # Load configurations
     model_config = VoiceGeneratorModuleConfig()
     inference_config = InferenceConfig()
+    device = inference_config.device
 
-    # Load the pretrained modules and the main VC model
-    content_encoder: EncoderModel = load_content_encoder(inference_config.device)
-    pitch_encoder: FCPE = load_pitch_encoder(inference_config.device)
-    amplitude_encoder: LocalRMSAmplitude = load_amplitude_encoder(inference_config.device)
-    codec: NeuCodec = load_codec(inference_config.device)
-    model: VoiceGenerator = load_generator(inference_config.device)
+    # Load pretrained modules
+    content_encoder: EncoderModel = load_content_encoder(device)
+    pitch_encoder: FCPE = load_pitch_encoder(device)
+    amplitude_encoder: LocalRMSAmplitude = load_amplitude_encoder(device)
+    timbre_encoder: ERes2NetV2 = load_timbre_encoder(device)
+    model: VoiceGenerator = load_generator(device)
+    vocoder: BigVGAN = load_vocoder(device) # Load vocoder để xuất âm thanh
+
     load_checkpoint(
-        checkpoint_path,
-        model, None, None, None, None
-    ) # We only need to load the model weights for inference, so we can pass None for the EMA model, optimizer, scheduler, and scaler.
+        checkpoint_path, None, model, None,
+        None, None, None, None, None, None
+    )
 
     print("All modules loaded successfully.")
 
-    # Load the source audio (audio that needs to be converted) and target audio (audio that needs to be converted to) file for conversion
-    source_audio_path = input("Enter the path to the source audio file (the audio that needs to be converted): ")
-    target_audio_path = input("Enter the path to the target audio file (the audio that needs to be converted to): ")
-    if not os.path.isfile(source_audio_path):
-        raise FileNotFoundError(f"Source audio file not found at path: {source_audio_path}")
-    if not os.path.isfile(target_audio_path):
-        raise FileNotFoundError(f"Target audio file not found at path: {target_audio_path}")
+    # Nhập 2 file âm thanh A (Source) và B (Target)
+    audio_A_path = input("Enter the path to Audio A (Reference to convert to): ")
+    audio_B_path = input("Enter the path to Audio B (Source which needs conversion): ")
+    if not os.path.isfile(audio_A_path):
+        raise FileNotFoundError(f"Audio A file not found at path: {audio_A_path}")
+    if not os.path.isfile(audio_B_path):
+        raise FileNotFoundError(f"Audio B file not found at path: {audio_B_path}")
 
-    source_waveform, source_sr = torchaudio.load(source_audio_path) # (1, T_source)
-    if source_sr != inference_config.input_sampling_rate:
-        source_waveform = F_audio.resample(source_waveform, orig_freq=source_sr, new_freq=inference_config.input_sampling_rate)
-    source_waveform = source_waveform.unsqueeze(0).to(inference_config.device) # (1, T_source) -> (1, 1, T_source)
-    print(f"Loaded source audio from {source_audio_path} with waveform shape {source_waveform.shape}.")
+    # Đọc và resample Audio A
+    waveform_A, sr_A = torchaudio.load(audio_A_path)
+    A_16 = F_audio.resample(waveform_A, orig_freq=sr_A, new_freq=16000).to(device)
+    A_24 = F_audio.resample(waveform_A, orig_freq=sr_A, new_freq=24000).to(device)
 
-    target_waveform, target_sr = torchaudio.load(target_audio_path) # (1, T_target)
-    if target_sr != inference_config.input_sampling_rate:
-        target_waveform = F_audio.resample(target_waveform, orig_freq=target_sr, new_freq=inference_config.input_sampling_rate)
-    target_waveform = target_waveform.unsqueeze(0).to(inference_config.device) # (1, T_target) -> (1, 1, T_target)
-    print(f"Loaded target audio from {target_audio_path} with waveform shape {target_waveform.shape}.")
+    # Đọc và resample Audio B
+    waveform_B, sr_B = torchaudio.load(audio_B_path)
+    B_16 = F_audio.resample(waveform_B, orig_freq=sr_B, new_freq=16000).to(device)
+    B_24 = F_audio.resample(waveform_B, orig_freq=sr_B, new_freq=24000).to(device)
 
-    # Begin the inference process
-    with torch.inference_mode(), autocast(device_type=inference_config.device, dtype=inference_config.amp, enabled=inference_config.amp != torch.float32):
-        # Extract the content, pitch, amplitude from the source audio and the timbre from the target audio using the respective pretrained modules
-        _, timbre_embedding = codec.encode_pre_vq(target_waveform.to(inference_config.device)) # (1, T_timbre, D_timbre)
-        timbre_embedding = timbre_embedding.to(inference_config.device)
-        print(f"Extracted timbre embedding from target audio with shape {timbre_embedding.shape}.")
+    # Padding: Thêm khoảng lặng vào cuối mỗi mảng
+    # A_16, A_24 bổ sung chia hết cho 320, 480 và thêm 0.5s
+    A_16 = pad_audio_arrays(A_16, sr=16000, target_mod=320, add_extra_silence=True)
+    A_24 = pad_audio_arrays(A_24, sr=24000, target_mod=480, add_extra_silence=True)
 
-        content_embedding = content_encoder.inference(source_waveform.to(inference_config.device)) # (1, T_content, D_content)
-        print(f"Extracted content embedding from source audio with shape {content_embedding.shape}.")
+    # B_16, B_24 bổ sung chia hết cho 320, 480 (không thêm 0.5s)
+    B_16 = pad_audio_arrays(B_16, sr=16000, target_mod=320, add_extra_silence=False)
+    B_24 = pad_audio_arrays(B_24, sr=24000, target_mod=480, add_extra_silence=False)
 
-        pitch_embedding = pitch_encoder.inference(source_waveform.to(inference_config.device)) # (1, T_pitch)
-        print(f"Extracted pitch embedding from source audio with shape {pitch_embedding.shape}.")
+    # Thay thế B_24 bằng khoảng lặng hoàn toàn
+    B_24 = torch.zeros_like(B_24)
 
-        amplitude_embedding = amplitude_encoder.inference(source_waveform.to(inference_config.device)) # (1, T_amplitude)
-        print(f"Extracted amplitude embedding from source audio with shape {amplitude_embedding.shape}.")
+    # Bắt đầu quá trình suy luận
+    with torch.inference_mode(), autocast(device_type=device, dtype=inference_config.amp, enabled=inference_config.amp != torch.float32):
+        # 1. Biến đổi Mel-spectrogram cho A_24 và B_24
+        mel_A = process_mel(A_24.squeeze(0), model_config).unsqueeze(0) # (1, 2T_A, n_mel_bins)
+        mel_B = process_mel(B_24.squeeze(0), model_config).unsqueeze(0) # (1, 2T_B, n_mel_bins)
 
-        # Create shape and length tensors for the content, pitch, amplitude, and timbre embeddings
-        content_length = torch.tensor([content_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the content embedding sequence
-        pitch_length = torch.tensor([pitch_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the pitch embedding sequence
-        amplitude_length = torch.tensor([amplitude_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the amplitude embedding sequence
-        timbre_length = torch.tensor([timbre_embedding.shape[1]], device=inference_config.device) # (1,) tensor containing the length of the timbre embedding sequence
+        # 2. Extract features qua Encoders cho A_16 và B_16
+        content_A = content_encoder.inference(A_16.unsqueeze(0)) # (1, T'_A, D_content)
+        content_B = content_encoder.inference(B_16.unsqueeze(0)) # (1, T'_B, D_content)
 
-        target_length = torch.tensor([max([content_embedding.shape[1], pitch_embedding.shape[1], amplitude_embedding.shape[1]])], device=inference_config.device)
-        # (1,) tensor containing the maximum length among the content, pitch, amplitude embedding sequences
-        target_shape = torch.Size([1, torch.max(target_length).item(), model_config.d_codec]) # The shape of the target tensor for the model input, which is (N, T, D_codec). Here N=1 for inference.
+        pitch_A = pitch_encoder.inference(A_16.unsqueeze(0)) # (1, T_A)
+        pitch_B = pitch_encoder.inference(B_16.unsqueeze(0)) # (1, T_B)
 
-        # Perform inference with the loaded model to get the output codec embedding for the converted audio
-        output: Tensor = model.forward(
-            content=content_embedding,
-            pitch=pitch_embedding,
-            amplitude=amplitude_embedding,
-            timbre=timbre_embedding,
+        amp_A = amplitude_encoder.inference(A_16.unsqueeze(0)) # (1, T_A)
+        amp_B = amplitude_encoder.inference(B_16.unsqueeze(0)) # (1, T_B)
 
+        timbre_B = timbre_encoder.inference(B_16.unsqueeze(0)) # (1, D_timbre)
+
+        # 2.5. Biến đổi tỉ lệ pitch và amplitude dựa theo tỉ lệ giá trị trung bình (của các phần tử khác 0) của A và B
+        pitch_A_median = pitch_A[pitch_A != 0].median() # Dùng median để giảm ảnh hưởng của outliers
+        pitch_B_median = pitch_B[pitch_B != 0].median() # Dùng median để giảm ảnh hưởng của outliers
+
+        # amp_A_median = amp_A[amp_A != 0].median()
+        # amp_B_median = amp_B[amp_B != 0].median()
+
+        pitch_B = pitch_B * (pitch_A_median / pitch_B_median + 1e-5) # Thêm epsilon để tránh chia cho 0 nếu pitch_B_median rất nhỏ
+        # amp_B = amp_B * (amp_A_median / amp_B_median + 1e-5) # Thêm epsilon để tránh chia cho 0 nếu amp_B_median rất nhỏ
+
+        # 3. Ghép nối (Concatenate) các tensor theo chiều thời gian
+        content_concat = torch.cat([content_A, content_B], dim=1) # (1, T'_A + T'_B, D_content)
+        pitch_concat = torch.cat([pitch_A, pitch_B], dim=1) # (1, T_A + T_B)
+        amplitude_concat = torch.cat([amp_A, amp_B], dim=1) # (1, T_A + T_B)
+        mel_concat = torch.cat([mel_A, mel_B], dim=1) # (1, 2T_A + 2T_B, n_mel_bins)
+
+        # 4. Tính toán T và tạo Mask
+        T_A = pitch_A.shape[1]
+        T_B = pitch_B.shape[1]
+
+        # Mask: False cho A (giữ nguyên), True cho B (che đi để generator sinh lại)
+        mask_A = torch.zeros(1, T_A, dtype=torch.bool, device=device)
+        mask_B = torch.ones(1, T_B, dtype=torch.bool, device=device)
+        mask_indices = torch.cat([mask_A, mask_B], dim=1) # (1, T_A + T_B)
+
+        content_length = torch.tensor([content_concat.shape[1]], device=device)
+        token_length = torch.tensor([T_A + T_B], device=device)
+
+        # 5. Đưa qua VoiceGenerator
+        output_mel: Tensor = model(
+            content=content_concat,
+            pitch=pitch_concat,
+            amplitude=amplitude_concat,
+            timbre=timbre_B,
+
+            mel=mel_concat,
+            mask_indices=mask_indices,
             content_length=content_length,
-            pitch_length=pitch_length,
-            amplitude_length=amplitude_length,
-            timbre_length=timbre_length,
+            token_length=token_length
+        ) # Shape: (1, 2T_A + 2T_B, n_mel_bins)
 
-            target_shape=target_shape,
-            target_length=target_length
-        ) # (1, N_bins, T, D_codec)
+        # 6. Tách phần ứng với mask (âm thanh B sau biến đổi)
+        # Mel spectrogram có chiều dài thời gian gấp đôi T, do đó phần của B bắt đầu từ 2 * T_A
+        converted_mel_B = output_mel[:, 2 * T_A:, :] # Shape: (1, 2T_B, n_mel_bins)
+        print(f"Converted Mel-spectrogram shape: {converted_mel_B.shape}")
 
-        # Post-process the output codec embedding to get the converted audio waveform and save it to a file
-        # Perform argmax over the N_bins dimension to get the quantized codec embedding
-        quantized_codec_embedding = torch.argmax(output, dim=1) # (1, T, D_codec)
-
-        # Convert the quantized codec embedding to the original audio waveform
-        codec_weights = torch.pow(model_config.n_bins, torch.arange(model_config.d_codec)) # (D_codec,)
-        codec_weights = codec_weights.to(dtype=torch.long, device=inference_config.device)
-        # (D_codec,) tensor containing the weights for each dimension of the codec embedding based on the number of bins
-
-        # Multiply the quantized codec embedding with the weights and sum over the D_codec dimension to get the quantized indices for each time step
-        quantized_indices = torch.sum(quantized_codec_embedding * codec_weights, dim=-1).unsqueeze(1) # (1, 1, T) tensor containing the quantized indices for each time step
-
-        # Decode the quantized indices to get the converted audio waveform
-        converted_waveform = codec.decode_code(quantized_indices.to('cpu')) # (1, 1, T_converted) tensor containing the converted audio waveform
+        # 7. Xuất phần này làm âm thanh đầu ra bằng Vocoder
+        # Mel transpose back to (1, n_mel_bins, 2T_B) for vocoder input if needed, depending on Vocoder architecture
+        converted_waveform = vocoder.inference(converted_mel_B.transpose(1, 2)) # (1, 2T_B, n_mel_bins) -> (1, n_mel_bins, 2T_B) -> (1, 1, L_converted)
         print(f"Converted audio waveform shape: {converted_waveform.shape}")
 
-        # Export the converted audio waveform to a file
-        output_audio_path = input("Enter the path to save the converted audio file (e.g., output.wav): ")
-        torchaudio.save(output_audio_path, converted_waveform.detach().squeeze(0).cpu(), sample_rate=inference_config.output_sampling_rate)
-        print(f"Converted audio saved to {output_audio_path} with sampling rate {inference_config.output_sampling_rate}.")
+        # 8. Export ra file WAV
+        output_audio_path = "examples/output.wav"
+        # output_audio_path = input("Enter the path to save the converted audio file (e.g., output.wav): ")
+        torchaudio.save(output_audio_path, converted_waveform.detach().squeeze(0).cpu(), sample_rate=24000)
+        print(f"Converted audio saved to {output_audio_path} with sampling rate {24000}.")
 
 
-# Main function to run the inference script
 def main():
     print("This is the main inference script. You can perform zero-shot voice conversion task (real-time/offline) here.")
     print("Choose an action:")
     print("1. Offline zero-shot voice conversion")
     print("2. Real-time zero-shot voice conversion (not implemented yet)")
-    # choice = input("Enter the number of your choice: ")
-    choice = "1" # For now, we will directly call the offline inference function since the real-time one is not implemented yet.
+
+    choice = "1"
     if choice == "1":
         print("You chose to perform zero-shot voice conversion.")
         inference_offline()
