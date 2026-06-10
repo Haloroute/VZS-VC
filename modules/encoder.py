@@ -9,8 +9,8 @@ from torch import Tensor
 
 class AudioEncoder(nn.Module):
     """
-    Audio Encoder module that natively processes Mel-spectrograms and downsamples them
-    to produce continuous audio embeddings with half the temporal resolution.
+    Audio Encoder module that natively processes Mel-spectrograms as 2D images
+    (C=1) and downsamples them to produce continuous audio embeddings.
     """
     def __init__(
         self,
@@ -39,13 +39,11 @@ class AudioEncoder(nn.Module):
         self.hop_length = hop_length
 
         # ---------------------------------------------------------
-        # Native STFT and Mel-Spectrogram Setup (No torchaudio)
+        # Native STFT and Mel-Spectrogram Setup
         # ---------------------------------------------------------
-        # 1. Create and register the Hann Window for the STFT
         window = torch.hann_window(n_fft)
         self.register_buffer("window", window)
 
-        # 2. Create and register the Mel Filterbank Matrix using Librosa
         mel_basis = librosa.filters.mel(
             sr=sample_rate,
             n_fft=n_fft,
@@ -53,67 +51,81 @@ class AudioEncoder(nn.Module):
         )
         self.register_buffer("mel_basis", torch.from_numpy(mel_basis).float())
 
-        # Feature Extraction Layer 1 (Local Context - Maintains T)
-        self.conv_1 = nn.Conv1d(
-            in_channels=n_mel_bins,
+        # ---------------------------------------------------------
+        # 2D Convolutional Layers (Treated as 1-channel Grayscale Image)
+        # ---------------------------------------------------------
+        # Layer 1: Local Spatial-Temporal Context
+        self.conv_1 = nn.Conv2d(
+            in_channels=1,
             out_channels=d_hidden,
-            kernel_size=3,
-            stride=1,
-            padding=1
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1) # Giữ nguyên H (n_mel_bins) và W (T)
         )
 
-        # Feature Extraction Layer 2 (Broader Context via Dilation - Maintains T)
-        # Formula: padding = dilation * (kernel_size - 1) // 2 to maintain length
-        self.conv_2 = nn.Conv1d(
+        # Layer 2: Dilation trên trục thời gian = 2
+        self.conv_2 = nn.Conv2d(
             in_channels=d_hidden,
             out_channels=d_hidden,
-            kernel_size=3,
-            stride=1,
-            padding=2,
-            dilation=2
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 2),
+            dilation=(1, 2)
         )
 
-        # Activation Function
-        self.activation = nn.SiLU()
-
-        # Downsampling Layer (Halves temporal resolution: T -> T // 2)
-        # Formula: L_out = floor((T + 2*1 - 4) / 2) + 1 = T/2
-        self.conv_3 = nn.Conv1d(
+        # Layer 3: Dilation = 4
+        self.conv_3 = nn.Conv2d(
             in_channels=d_hidden,
+            out_channels=d_hidden * 2,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 4),
+            dilation=(1, 4)
+        )
+
+        # Layer 4: Dilation = 8
+        self.conv_4 = nn.Conv2d(
+            in_channels=d_hidden * 2,
+            out_channels=d_hidden * 2,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 8),
+            dilation=(1, 8)
+        )
+
+        # Layer 5: Dilation = 16
+        self.conv_5 = nn.Conv2d(
+            in_channels=d_hidden * 2,
+            out_channels=d_hidden * 4,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 16),
+            dilation=(1, 16)
+        )
+
+        # Layer 6: Downsampling Layer (T -> T // 2)
+        self.conv_6 = nn.Conv2d(
+            in_channels=d_hidden * 4,
             out_channels=d_audio,
-            kernel_size=4,
-            stride=2,
-            padding=1
+            kernel_size=(3, 4),
+            stride=(1, 2),
+            padding=(1, 1)
         )
 
-        # Initialize parameters
+        self.activation = nn.LeakyReLU(negative_slope=0.1)
         self.init_params()
 
     def init_params(self, std: float = 0.02):
-        """
-        Initialize the parameters of the AudioEncoder using truncated normal initialization 
-        for weights and zero initialization for biases.
-        """
-        # Initialize Conv1d layers
-        nn.init.trunc_normal_(self.conv_1.weight, mean=0.0, std=std)
-        nn.init.zeros_(self.conv_1.bias)
+        conv_layers = [
+            self.conv_1, self.conv_2, self.conv_3, 
+            self.conv_4, self.conv_5, self.conv_6
+        ]
 
-        nn.init.trunc_normal_(self.conv_2.weight, mean=0.0, std=std)
-        nn.init.zeros_(self.conv_2.bias)
-
-        nn.init.trunc_normal_(self.conv_3.weight, mean=0.0, std=std)
-        nn.init.zeros_(self.conv_3.bias)
+        for layer in conv_layers:
+            nn.init.trunc_normal_(layer.weight, mean=0.0, std=std)
+            nn.init.zeros_(layer.bias)
 
     def extract_mel_spectrogram(self, audio: Tensor) -> Tensor:
-        """
-        Natively computes the log-Mel-spectrogram from raw audio waveforms.
-
-        Args:
-            audio: Tensor of shape (N, L)
-        
-        Returns:
-            Tensor of shape (N, n_mel_bins, T)
-        """
         stft_complex = torch.stft(
             audio,
             n_fft=self.n_fft,
@@ -123,20 +135,14 @@ class AudioEncoder(nn.Module):
             center=False,
             normalized=False,
             return_complex=True
-        ) # (N, n_fft//2 + 1, T)
+        ) 
 
-        magnitudes = torch.abs(stft_complex) # (N, n_fft//2 + 1, T)
-        
-        # Apply Mel Filterbank: (n_mels, n_fft//2 + 1) @ (N, n_fft//2 + 1, T) -> (N, n_mel_bins, T)
+        magnitudes = torch.abs(stft_complex) 
         mel_spec = torch.matmul(self.mel_basis, magnitudes) 
-        
         log_mel_spec = torch.log(torch.clamp(mel_spec, min=1e-5))
         return log_mel_spec # (N, n_mel_bins, T)
 
-    def forward(
-        self,
-        input: Tensor
-    ) -> Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         """
         Forward pass for the Audio Encoder Block (Internal processing).
 
@@ -146,19 +152,26 @@ class AudioEncoder(nn.Module):
         Returns:
             Tensor: Output audio embedding tensor of shape (N, T // 2, D_audio).
         """
-        # Step 1: Feature Extraction (Layer 1)
-        hidden: Tensor = self.conv_1(input.permute(0, 2, 1)) # (N, T, n_mel_bins) -> (N, n_mel_bins, T) -> (N, d_hidden, T)
-        hidden = self.activation(hidden) # (N, d_hidden, T)
+        # (N, T, n_mel_bins) -> (N, n_mel_bins, T) -> (N, 1, n_mel_bins, T)
+        hidden = input.transpose(1, 2).unsqueeze(1)
 
-        # Step 2: Feature Extraction (Layer 2)
-        hidden = self.conv_2(hidden) # (N, d_hidden, T) -> (N, d_hidden, T)
-        hidden = self.activation(hidden) # (N, d_hidden, T)
+        # Feature Extraction
+        hidden = self.activation(self.conv_1(hidden)) # (N, d_hidden, n_mel_bins, T)
+        hidden = self.activation(self.conv_2(hidden)) # (N, d_hidden, n_mel_bins, T)
+        hidden = self.activation(self.conv_3(hidden)) # (N, 2 * d_hidden, n_mel_bins, T)
+        hidden = self.activation(self.conv_4(hidden)) # (N, 2 * d_hidden, n_mel_bins, T)
+        hidden = self.activation(self.conv_5(hidden)) # (N, 4 * d_hidden, n_mel_bins, T)
 
-        # Step 3: Downsampling to produce the final audio embedding
-        output: Tensor = self.conv_3(hidden) # (N, d_hidden, T) -> (N, d_audio, T // 2)
+        # Max Pooling theo chiều tần số (dim=2 tương ứng với n_mel_bins)
+        # (N, 4 * d_hidden, n_mel_bins, T // 2) -> (N, 4 * d_hidden, 1, T // 2)
+        hidden = torch.max(hidden, dim=2, keepdim=True)[0]
 
-        return output.permute(0, 2, 1) # (N, d_audio, T // 2) -> (N, T // 2, d_audio)
-    
+        # Downsampling theo chiều thời gian T
+        output = self.conv_6(hidden) # (N, d_audio, 1, T // 2)
+
+        # (N, d_audio, 1, T // 2) -> (N, T // 2, d_audio)
+        return output.squeeze(2).transpose(1, 2)
+
     def inference(self, x: Tensor) -> Tensor:
         """
         Perform complete inference from raw 24kHz audio waveform to downsampled audio embeddings.

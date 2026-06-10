@@ -49,6 +49,7 @@ def collate_fn(
     content_padded, content_lengths = process_feature(dataset_config.content_column)
     amplitude_padded, _ = process_feature(dataset_config.amplitude_column)
     pitch_padded, _ = process_feature(dataset_config.pitch_column)
+    timbre_padded, _ = process_feature(dataset_config.timbre_column)
 
     # Khởi tạo tham số cho việc xử lý audio (Mel-spectrogram và masking)
     window = torch.hann_window(model_config.n_fft)
@@ -124,6 +125,7 @@ def collate_fn(
         "content": content_padded, # (N, T', D_content)
         "pitch": pitch_padded, # (N, T)
         "amplitude": amplitude_padded, # (N, T)
+        "timbre": timbre_padded, # (N, D_timbre)
         "mel": mel_padded, # (N, 2T, n_mel_bins)
 
         "mask_indices": mask_indices_padded, # (N, T)

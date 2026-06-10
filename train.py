@@ -222,6 +222,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
             # "content": content_padded, # (N, T', D_content)
             # "pitch": pitch_padded, # (N, T)
             # "amplitude": amplitude_padded, # (N, T)
+            # "timbre": timbre_padded, # (N, D_timbre)
             # "mel": mel_padded, # (N, 2T, n_mel_bins)
 
             # "mask_indices": mask_indices_padded, # (N, T)
@@ -240,6 +241,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                         content=batch['content'],
                         pitch=batch['pitch'],
                         amplitude=batch['amplitude'],
+                        timbre=batch['timbre'],
                         mel=batch['mel'],
 
                         mask_indices=batch['mask_indices'],
@@ -277,6 +279,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                     content=batch['content'],
                     pitch=batch['pitch'],
                     amplitude=batch['amplitude'],
+                    timbre=batch['timbre'],
                     mel=batch['mel'],
 
                     mask_indices=batch['mask_indices'],
@@ -348,6 +351,7 @@ def train_model(checkpoint_path: str | None = None, previous_run_id: str | None 
                             content=batch['content'],
                             pitch=batch['pitch'],
                             amplitude=batch['amplitude'],
+                            timbre=batch['timbre'],
                             mel=batch['mel'],
 
                             mask_indices=batch['mask_indices'],

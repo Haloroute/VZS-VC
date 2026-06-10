@@ -54,7 +54,7 @@ class GeneratorLoss(nn.Module):
         # Feature Matching Loss: L1 loss between discriminator feature maps for generated and real samples, averaged over generated time steps
         fm_loss: Tensor = sum((self.l1_loss(fmap_g, fmap_t.detach()) * mask_indices.unsqueeze(1)).mean(dim=1)
                               for fmap_g, fmap_t in zip(fmap_gen, fmap_target)) # (N, T)
-        fm_loss = fm_loss.sum() / (mask_indices.sum() + 1e-8) # Average only over generated time steps
+        fm_loss = fm_loss.sum() / (len(fmap_gen) * mask_indices.sum() + 1e-8) # Average only over generated time steps
 
         # Total Generator Loss
         total_loss: Tensor = self.lambda_recon * recon_loss + self.lambda_adv * adv_loss + self.lambda_fm * fm_loss

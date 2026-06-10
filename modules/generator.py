@@ -15,10 +15,10 @@ class VoiceGenerator(nn.Module):
     """
     def __init__(
         self,
-        d_content: int, d_pitch: int, d_amplitude: int,
+        d_content: int, d_pitch: int, d_amplitude: int, d_timbre: int,
         n_pitch: int, min_pitch: float, max_pitch: float,
         n_amplitude: int, min_amplitude: float, max_amplitude: float,
-        d_model: int, n_heads: int, d_ff: int, n_layers: int, dropout: float = 0.1,
+        d_conv: int, d_model: int, n_heads: int, d_ff: int, n_layers: int, dropout: float = 0.1,
         sample_rate: int = 24000, n_fft: int = 1024, hop_length: int = 240, n_mel_bins: int = 100
     ):
         """
@@ -28,6 +28,7 @@ class VoiceGenerator(nn.Module):
             d_content (int): The dimensionality of the content embedding (came from VietASR content features). Should be 512.
             d_pitch (int): The dimensionality of the pitch embedding (after logarithmic embedding).
             d_amplitude (int): The dimensionality of the amplitude embedding (after logarithmic embedding).
+            d_timbre (int): The dimensionality of the timbre embedding (came from ERes2Net-V2 timbre features). Should be 192.
 
             n_pitch (int): The number of bins for pitch embedding.
             min_pitch (float): The minimum value for pitch embedding (should be a positive value). Should be around 32.7 (C1 note).
@@ -37,6 +38,7 @@ class VoiceGenerator(nn.Module):
             min_amplitude (float): The minimum value for amplitude embedding (should be a positive value). Should be around 0.01.
             max_amplitude (float): The maximum value for amplitude embedding (should be a positive value). Should be around 0.85.
 
+            d_conv (int): The dimensionality of the convolutional layer.
             d_model (int): The dimensionality of the model (feature dimension).
             n_heads (int): The number of attention heads in each DiT block.
             d_ff (int): The dimensionality of the feed-forward layer in each DiT block.
@@ -50,15 +52,16 @@ class VoiceGenerator(nn.Module):
         """
         super().__init__()
         # Initialize model parameters
-        self.d_content, self.d_pitch, self.d_amplitude = d_content, d_pitch, d_amplitude
+        self.d_content, self.d_pitch, self.d_amplitude, self.d_timbre = d_content, d_pitch, d_amplitude, d_timbre
         self.n_pitch, self.min_pitch, self.max_pitch = n_pitch, min_pitch, max_pitch
         self.n_amplitude, self.min_amplitude, self.max_amplitude = n_amplitude, min_amplitude, max_amplitude
-        self.d_model, self.n_heads, self.d_ff, self.n_layers, self.dropout = d_model, n_heads, d_ff, n_layers, dropout
+        self.d_conv, self.d_model, self.n_heads, self.d_ff, self.n_layers, self.dropout = d_conv, d_model, n_heads, d_ff, n_layers, dropout
         self.sample_rate, self.n_fft, self.hop_length, self.n_mel_bins = sample_rate, n_fft, hop_length, n_mel_bins
 
         # Audio Encoder for extracting audio embeddings from Mel-spectrograms
-        self.audio_encoder = AudioEncoder(d_model, 2 * d_model, sample_rate, n_fft, hop_length, n_mel_bins)
-        self.mask_token = nn.Parameter(torch.zeros(d_model))
+        self.audio_encoder = AudioEncoder(d_model, d_conv, sample_rate, n_fft, hop_length, n_mel_bins)
+        self.cpa_mask_token = nn.Parameter(torch.zeros(d_model)) # Learnable mask token for CPA (Content-Pitch-Amplitude) masking
+        self.audio_mask_token = nn.Parameter(torch.zeros(d_model)) # Learnable mask token for audio masking
 
         # Embedding layers for pitch, amplitude features
         self.pitch_embedding = LogEmbedding(n_pitch, d_pitch, min_pitch, max_pitch)
@@ -66,6 +69,7 @@ class VoiceGenerator(nn.Module):
 
         # Projection layers for input features
         self.features_projection = nn.Linear(d_content + d_pitch + d_amplitude, d_model)
+        self.timbre_projection = nn.Linear(d_timbre, d_model)
 
         # Transformer blocks
         self.transformer_blocks = nn.ModuleList([
@@ -86,10 +90,13 @@ class VoiceGenerator(nn.Module):
         self.audio_encoder.init_params(std=std)
         self.pitch_embedding.init_params(std=std)
         self.amplitude_embedding.init_params(std=std)
-        nn.init.trunc_normal_(self.mask_token, std=std)
+
+        # Initialize the mask tokens with truncated normal distribution
+        nn.init.trunc_normal_(self.cpa_mask_token, std=std)
+        nn.init.trunc_normal_(self.audio_mask_token, std=std)
 
         # Initialize the parameters of projection layers
-        for linear in [self.features_projection, self.output_projection]:
+        for linear in [self.features_projection, self.timbre_projection, self.output_projection]:
             if isinstance(linear, nn.Linear):
                 nn.init.trunc_normal_(linear.weight, std=std)
                 if linear.bias is not None:
@@ -101,7 +108,7 @@ class VoiceGenerator(nn.Module):
 
     def forward(
         self,
-        content: Tensor, pitch: Tensor, amplitude: Tensor, mel: Tensor,
+        content: Tensor, pitch: Tensor, amplitude: Tensor, timbre: Tensor, mel: Tensor,
         mask_indices: Tensor, content_length: Tensor, token_length: Tensor
     ) -> Tensor:
         """
@@ -111,6 +118,7 @@ class VoiceGenerator(nn.Module):
             content (Tensor): Content features of shape (N, T', D_content). T' ~ T // 2.
             pitch (Tensor): Pitch features of shape (N, T).
             amplitude (Tensor): Amplitude features of shape (N, T).
+            timbre (Tensor): Timbre features of shape (N, D_timbre).
             mel (Tensor): Mel-spectrogram features of shape (N, 2T, n_mel_bins).
 
             mask_indices (Tensor): Indices of positions in the Mel-spectrogram to be masked, shape (N, T). True for positions to be masked, False for positions to be kept.
@@ -159,7 +167,7 @@ class VoiceGenerator(nn.Module):
         audio_emb: Tensor = self.audio_encoder(mel) # (N, T, D_model)
 
         # Apply mask token based on mask_indices
-        audio_emb: Tensor = torch.where(mask_indices.unsqueeze(-1).bool(), self.mask_token, audio_emb) # (N, T, D_model)
+        audio_emb: Tensor = torch.where(mask_indices.unsqueeze(-1).bool(), self.audio_mask_token, audio_emb) # (N, T, D_model)
 
         # Step 3: Embed pitch and amplitude features using logarithmic embedding.
         pitch_emb: Tensor = self.pitch_embedding(pitch) # (N, T) -> (N, T, D_pitch)
@@ -168,7 +176,13 @@ class VoiceGenerator(nn.Module):
         # Step 3: Concatenate content, pitch, amplitude, and project to d_model dimension.
         features_emb: Tensor = torch.cat([content_emb, pitch_emb, amplitude_emb], dim=-1) # (N, T, D_content + D_pitch + D_amplitude)
         features_emb: Tensor = self.features_projection(features_emb) # (N, T, D_content + D_pitch + D_amplitude) -> (N, T, D_model)
-        input: Tensor = features_emb + audio_emb # (N, T, D_model)
+
+        # Apply mask token to features embedding based on mask_indices for CPA masking
+        features_emb: Tensor = torch.where(~mask_indices.unsqueeze(-1).bool(), self.cpa_mask_token, features_emb) # (N, T, D_model)
+
+        # Step 3.5: Add timbre features (which are constant across time) after projecting to d_model dimension.
+        timbre_emb: Tensor = self.timbre_projection(timbre).unsqueeze(1) # (N, D_timbre) -> (N, D_model) -> (N, 1, D_model)
+        input: Tensor = features_emb + audio_emb + timbre_emb # (N, T, D_model)        
 
         # Step 4: Pass through Transformer blocks
         for block in self.transformer_blocks:

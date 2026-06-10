@@ -10,6 +10,7 @@ from torch.amp import autocast
 from modules import (
     BigVGAN,
     EncoderModel,
+    ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
     VoiceGenerator
@@ -24,6 +25,7 @@ from utils.modules import (
     load_content_encoder,
     load_generator,
     load_pitch_encoder,
+    load_timbre_encoder,
     load_vocoder
 )
 
@@ -82,10 +84,10 @@ def pad_audio_arrays(audio: Tensor, sr: int, target_mod: int, add_extra_silence:
     L = audio.shape[-1]
     rem = L % target_mod
     pad_len = (target_mod - rem) if rem != 0 else 0
-    
+
     if add_extra_silence:
         pad_len += int(0.5 * sr)
-        
+
     return F.pad(audio, (0, pad_len), mode='constant', value=0.0)
 
 # Function to perform offline zero-shot voice conversion using a trained model
@@ -105,19 +107,20 @@ def inference_offline():
     content_encoder: EncoderModel = load_content_encoder(device)
     pitch_encoder: FCPE = load_pitch_encoder(device)
     amplitude_encoder: LocalRMSAmplitude = load_amplitude_encoder(device)
+    timbre_encoder: ERes2NetV2 = load_timbre_encoder(device)
     model: VoiceGenerator = load_generator(device)
     vocoder: BigVGAN = load_vocoder(device) # Load vocoder để xuất âm thanh
 
     load_checkpoint(
-        checkpoint_path, model, None, None,
+        checkpoint_path, None, model, None,
         None, None, None, None, None, None
     )
 
     print("All modules loaded successfully.")
 
     # Nhập 2 file âm thanh A (Source) và B (Target)
-    audio_A_path = input("Enter the path to Audio A (Source/Context): ")
-    audio_B_path = input("Enter the path to Audio B (Target to convert): ")
+    audio_A_path = input("Enter the path to Audio A (Reference to convert to): ")
+    audio_B_path = input("Enter the path to Audio B (Source which needs conversion): ")
     if not os.path.isfile(audio_A_path):
         raise FileNotFoundError(f"Audio A file not found at path: {audio_A_path}")
     if not os.path.isfile(audio_B_path):
@@ -137,7 +140,7 @@ def inference_offline():
     # A_16, A_24 bổ sung chia hết cho 320, 480 và thêm 0.5s
     A_16 = pad_audio_arrays(A_16, sr=16000, target_mod=320, add_extra_silence=True)
     A_24 = pad_audio_arrays(A_24, sr=24000, target_mod=480, add_extra_silence=True)
-    
+
     # B_16, B_24 bổ sung chia hết cho 320, 480 (không thêm 0.5s)
     B_16 = pad_audio_arrays(B_16, sr=16000, target_mod=320, add_extra_silence=False)
     B_24 = pad_audio_arrays(B_24, sr=24000, target_mod=480, add_extra_silence=False)
@@ -161,6 +164,18 @@ def inference_offline():
         amp_A = amplitude_encoder.inference(A_16.unsqueeze(0)) # (1, T_A)
         amp_B = amplitude_encoder.inference(B_16.unsqueeze(0)) # (1, T_B)
 
+        timbre_B = timbre_encoder.inference(B_16.unsqueeze(0)) # (1, D_timbre)
+
+        # 2.5. Biến đổi tỉ lệ pitch và amplitude dựa theo tỉ lệ giá trị trung bình (của các phần tử khác 0) của A và B
+        pitch_A_median = pitch_A[pitch_A != 0].median() # Dùng median để giảm ảnh hưởng của outliers
+        pitch_B_median = pitch_B[pitch_B != 0].median() # Dùng median để giảm ảnh hưởng của outliers
+
+        # amp_A_median = amp_A[amp_A != 0].median()
+        # amp_B_median = amp_B[amp_B != 0].median()
+
+        pitch_B = pitch_B * (pitch_A_median / pitch_B_median + 1e-5) # Thêm epsilon để tránh chia cho 0 nếu pitch_B_median rất nhỏ
+        # amp_B = amp_B * (amp_A_median / amp_B_median + 1e-5) # Thêm epsilon để tránh chia cho 0 nếu amp_B_median rất nhỏ
+
         # 3. Ghép nối (Concatenate) các tensor theo chiều thời gian
         content_concat = torch.cat([content_A, content_B], dim=1) # (1, T'_A + T'_B, D_content)
         pitch_concat = torch.cat([pitch_A, pitch_B], dim=1) # (1, T_A + T_B)
@@ -180,10 +195,12 @@ def inference_offline():
         token_length = torch.tensor([T_A + T_B], device=device)
 
         # 5. Đưa qua VoiceGenerator
-        output_mel: Tensor = model.forward(
+        output_mel: Tensor = model(
             content=content_concat,
             pitch=pitch_concat,
             amplitude=amplitude_concat,
+            timbre=timbre_B,
+
             mel=mel_concat,
             mask_indices=mask_indices,
             content_length=content_length,
@@ -212,7 +229,7 @@ def main():
     print("Choose an action:")
     print("1. Offline zero-shot voice conversion")
     print("2. Real-time zero-shot voice conversion (not implemented yet)")
-    
+
     choice = "1"
     if choice == "1":
         print("You chose to perform zero-shot voice conversion.")

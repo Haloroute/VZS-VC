@@ -12,7 +12,7 @@ class TrainConfig:
 
     n_epochs: int = 100 # The number of epochs to train the model.
     batch_size: int = 32 # The batch size for training and validation.
-    lr: float = 5e-3 # The learning rate for the optimizer.
+    lr: float = 5e-4 # The learning rate for the optimizer.
     beta: tuple[float, float] = (0.9, 0.9) # The beta parameters for the AdamW optimizer.
     weight_decay: float = 0.01 # The weight decay for regularization.
     clip_grad_norm: float = 1.0 # The maximum norm for gradient clipping to prevent exploding gradients.
@@ -22,8 +22,8 @@ class TrainConfig:
 
     mask_ratio: tuple[float, float] = (0.1, 0.7) # Range for random mask ratio during training
     lambda_recon: float = 1.0 # Weight for the reconstruction loss component
-    lambda_adv: float = 0.02 # Weight for the adversarial loss component
-    lambda_fm: float = 0.04 # Weight for the feature matching loss component
+    lambda_adv: float = 0.05 # Weight for the adversarial loss component
+    lambda_fm: float = 0.1 # Weight for the feature matching loss component
 
     checkpoint_folder: str = "checkpoints" # The folder where model checkpoints will be saved during training.
     save_every_n_epochs: int = 1 # The frequency (in epochs) at which to save model checkpoints during training.
