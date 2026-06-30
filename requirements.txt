@@ -13,7 +13,9 @@ torchcodec
 
 # Utility libraries
 datasets
+gradio
 huggingface_hub
 safetensors
+sounddevice
 tqdm
 wandb

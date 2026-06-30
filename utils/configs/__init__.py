@@ -7,6 +7,7 @@ from .dataset import (
 )
 from .implementation import (
     InferenceConfig,
+    RealTimeConfig,
     TrainConfig,
     ValidationConfig
 )
