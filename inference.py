@@ -96,12 +96,12 @@ def convert_voice(audio_A_path, audio_B_path):
 # --- GRADIO INTERFACE ---
 with gr.Blocks(title="Zero-Shot Voice Conversion") as demo:
     gr.Markdown("## VZS-VC: Zero-Shot Voice Conversion")
-    gr.Markdown("Upload a **Reference Audio** (Target Voice) and a **Source Audio** (Speech to convert).")
+    gr.Markdown("Upload a **Source Audio** (Speech to convert) and a **Reference Audio** (Target Voice) .")
 
     with gr.Row():
         with gr.Column():
-            ref_audio = gr.Audio(type="filepath", label="Audio A (Reference / Target Voice)")
-            src_audio = gr.Audio(type="filepath", label="Audio B (Source / Voice to Convert)")
+            src_audio = gr.Audio(type="filepath", label="Audio A (Source / Voice to Convert)")
+            ref_audio = gr.Audio(type="filepath", label="Audio B (Reference / Target Voice)")
             convert_btn = gr.Button("Convert Voice", variant="primary")
 
         with gr.Column():

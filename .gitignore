@@ -57,6 +57,7 @@ checkpoints/
 # Arbitrary files and folders to ignore
 *.ipynb
 .vscode/
+configs/
 examples/
 logs/
 wandb/
