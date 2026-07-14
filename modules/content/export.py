@@ -334,15 +334,32 @@ class EncoderModel(nn.Module):
                 ) for feature in x
             ])  # (N, num_frames, num_mel_bins)
             feature_lengths = torch.tensor([feature.size(0) for feature in features], dtype=torch.int32, device=x.device)
-            output, _ = self.forward(features, feature_lengths) # (N, T_content, D_content)
+            output, _ = self(features, feature_lengths) # (N, T_content, D_content)
             return output
 
 
 class StreamingEncoderModel(nn.Module):
     """A wrapper for encoder and encoder_embed"""
 
-    def __init__(self, encoder: nn.Module, encoder_embed: nn.Module) -> None:
+    def __init__(
+        self, 
+        encoder: nn.Module, 
+        encoder_embed: nn.Module,
+        dither: int = 0,
+        high_freq: int = -400,
+        n_mel_bins: int = 80,
+        sampling_rate: int = 16000,
+        snip_edges: bool = False
+    ) -> None:
         super().__init__()
+        self.encoder = encoder
+        self.encoder_embed = encoder_embed
+        self.dither = dither
+        self.high_freq = high_freq
+        self.n_mel_bins = n_mel_bins
+        self.sampling_rate = sampling_rate
+        self.snip_edges = snip_edges
+
         assert len(encoder.chunk_size) == 1, encoder.chunk_size
         assert len(encoder.left_context_frames) == 1, encoder.left_context_frames
         self.chunk_size = encoder.chunk_size[0]
@@ -354,6 +371,9 @@ class StreamingEncoderModel(nn.Module):
 
         self.encoder = encoder
         self.encoder_embed = encoder_embed
+
+        # Variable to store KV-cache
+        self.states = None
 
     def forward(
         self, features: Tensor, feature_lengths: Tensor, states: list[Tensor]
@@ -406,13 +426,42 @@ class StreamingEncoderModel(nn.Module):
             states=encoder_states,
             src_key_padding_mask=src_key_padding_mask,
         )
-        encoder_out = encoder_out.permute(1, 0, 2)  # (T, N, C) ->(N, T, C)
+        encoder_out = encoder_out.permute(1, 0, 2)  # (T, N, C) -> (N, T, C)
 
         new_states = new_encoder_states + [
             new_cached_embed_left_pad,
             new_processed_lens,
         ]
         return encoder_out, encoder_out_lens, new_states
+
+    def inference(self, x: torch.Tensor):
+        """
+        Perform inference using the ZipFormer model.
+        Args:
+            x: A 3D tensor (with batch dimension) containing the audio data in mono, 16kHz format (shape: (N, 1, T)).
+        Returns:
+            The output of the model after inference (shape: (N, T_content, D_content) with T_content and D_content = 512 being the number of time steps and features respectively).
+        """
+        # Initialize states if not initialized yet
+        if self.states is None:
+            batch_size = x.size(0)
+            device = x.device
+            self.states = self.model.get_init_states(batch_size, device)
+
+        with torch.inference_mode():
+            features = torch.stack([
+                Kaldi.fbank(
+                    feature, # Add channel dimension for Kaldi.fbank
+                    dither=self.dither,
+                    high_freq=self.high_freq,
+                    num_mel_bins=self.n_mel_bins,
+                    sample_frequency=self.sampling_rate,
+                    snip_edges=self.snip_edges
+                ) for feature in x
+            ])  # (N, num_frames, num_mel_bins)
+            feature_lengths = torch.tensor([feature.size(0) for feature in features], dtype=torch.int32, device=x.device)
+            output, _, self.states = self(features, feature_lengths, self.states) # (N, T_content, D_content)
+            return output
 
     @torch.jit.export
     def get_init_states(

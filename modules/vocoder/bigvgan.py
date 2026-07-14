@@ -271,7 +271,7 @@ class BigVGAN(
 
         # Select which Activation1d, lazy-load cuda version to ensure backward compatibility
         if self.h.get("use_cuda_kernel", False):
-            from alias_free_activation.cuda.activation1d import (
+            from .alias_free_activation.cuda.activation1d import (
                 Activation1d as CudaActivation1d,
             )
 

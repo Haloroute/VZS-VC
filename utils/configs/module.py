@@ -72,3 +72,4 @@ class VoiceDiscriminatorModuleConfig:
 @dataclass
 class BigVGANModuleConfig:
     pretrained_model_name_or_path: str = 'nvidia/bigvgan_base_24khz_100band' # The name or path of the pretrained BigVGAN model to use as the vocoder (should be compatible with the n_mel_bins used in the generator, which is 100).
+    use_cuda_kernel: bool = False # Whether to use the CUDA kernel for faster inference with BigVGAN (requires compatible GPU and PyTorch version).

@@ -43,6 +43,19 @@ class ValidationConfig:
 # Configuration for the inference process
 @dataclass
 class InferenceConfig:
-    device: str = "cpu" # The device to use for inference (e.g., "cuda" for GPU or "cpu" for CPU).
+    device: str = "cuda" # The device to use for inference (e.g., "cuda" for GPU or "cpu" for CPU).
     compiled: bool = False # Whether to use torch.compile for potential speed improvements during inference (optional, can be disabled if it causes issues).
     amp: torch.dtype = torch.float32 # The automatic mixed precision (AMP) mode to use during inference (available options: torch.float16, torch.bfloat16, torch.float32).
+
+# Configuration for real-time voice conversion (VC) inference
+@dataclass
+class RealTimeConfig:
+    device: str = "cuda" # The device to use for real-time inference (e.g., "cuda" for GPU or "cpu" for CPU).
+    compiled: bool = False # Whether to use torch.compile for potential speed improvements during real-time inference (optional, can be disabled if it causes issues).
+    amp: torch.dtype = torch.float32 # The automatic mixed precision (AMP) mode to use during real-time inference (available options: torch.float16, torch.bfloat16, torch.float32).
+
+    sample_rate: int = 24000 # The sampling rate for the input and output audio (should match the sampling rate used for training, which is 24000).
+    n_channels: int = 1 # The number of audio channels (1 for mono, 2 for stereo). For real-time VC, mono is typically used to minimize latency and complexity.
+    chunk_size_ms: int = 2000 # The size of each audio chunk in milliseconds for processing (e.g., 1000ms corresponds to 24000 samples at 24kHz).
+    overlap_size_ms: int = 160 # The size of the overlap region in milliseconds for cross-fading between chunks (e.g., 160ms corresponds to 3840 samples at 24kHz).
+    n_max_chunks: int = 10 # The maximum number of chunks to keep in the queue

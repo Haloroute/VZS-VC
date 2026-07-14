@@ -9,6 +9,7 @@ from .configs import (
     ERes2NetV2ModuleConfig,
     FCPEModuleConfig,
     LocalRMSModuleConfig,
+    RealTimeConfig,
     VoiceDiscriminatorModuleConfig,
     VoiceGeneratorModuleConfig,
     Zipformer2ModuleConfig
@@ -20,6 +21,7 @@ from modules import (
     ERes2NetV2,
     FCPE,
     LocalRMSAmplitude,
+    StreamingEncoderModel,
     VoiceGenerator,
     VoiceDiscriminator,
     Zipformer2
@@ -61,7 +63,7 @@ def load_pitch_encoder(device: torch.device, config: FCPEModuleConfig = None) ->
 
 
 # Functions to load pretrained model for content encoder (Zipformer2)
-def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = None) -> Zipformer2:
+def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = None) -> EncoderModel:
     # If no config is provided, use the default one
     if config is None:
         config = Zipformer2ModuleConfig()
@@ -89,6 +91,51 @@ def load_content_encoder(device: torch.device, config: Zipformer2ModuleConfig = 
 
     # Load the pretrained checkpoint
     load_model(model, config.checkpoint_path)
+
+    # Set the model to evaluation mode
+    model.to(device).eval()
+    return model
+
+
+# Functions to load pretrained model for content encoder (Zipformer2) in streaming mode
+def load_streaming_content_encoder(
+    device: torch.device,
+    model_config: Zipformer2ModuleConfig = None,
+    realtime_config: RealTimeConfig = None
+) -> StreamingEncoderModel:
+    # If no config is provided, use the default one
+    if model_config is None:
+        model_config = Zipformer2ModuleConfig()
+    if realtime_config is None:
+        realtime_config = RealTimeConfig()
+
+    # 1. Khởi tạo module Subsampling (encoder_embed)
+    # Tham số mặc định: feature_dim = 80, encoder_dim đầu tiên = 192
+    encoder_embed = Conv2dSubsampling()
+
+    # 2. Khởi tạo mạng chính Zipformer2 (encoder)
+    # Các tham số được lấy từ cấu hình mặc định của parser
+    encoder = Zipformer2(
+        causal=True,
+        chunk_size=(realtime_config.chunk_size_ms / 40,),
+        left_context_frames=(realtime_config.overlap_size_ms / 40,)
+    )
+
+    # 3. Khởi tạo AsrModel đóng gói
+    # Tắt transducer và attention_decoder, chỉ bật CTC để thoả mãn assert
+    # Lấy max của encoder_dim làm chiều đầu ra cho encoder_dim của model
+    model = StreamingEncoderModel(
+        encoder_embed=encoder_embed,
+        encoder=encoder,
+        dither=model_config.dither,
+        high_freq=model_config.high_freq,
+        n_mel_bins=model_config.n_mel_bins,
+        sampling_rate=model_config.sampling_rate,
+        snip_edges=model_config.snip_edges
+    )
+
+    # Load the pretrained checkpoint
+    load_model(model, model_config.checkpoint_path)
 
     # Set the model to evaluation mode
     model.to(device).eval()
